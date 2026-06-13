@@ -454,21 +454,16 @@ html, body {
   width: 100%;
   padding-top: 100%; /* 1:1 square */
   overflow: hidden;
-  border-radius: 10px;
-  border: 2px solid #1a1a3a;
-  background: #050510;
-  transition: border-color 0.2s;
+  background: transparent;
 }
-.item-img-wrap:hover { border-color: var(--lcars-orange); }
 
 .item-img-wrap img {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
   display: block;
-  border-radius: 8px;
 }
 
 /* Fallback placeholder if no image */
