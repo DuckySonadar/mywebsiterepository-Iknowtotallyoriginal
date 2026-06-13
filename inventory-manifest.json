@@ -3,24 +3,24 @@
     "category": "ABL",
     "number": "0001",
     "description": "FlexiBettaFish",
-    "file": "ABL-0001-FlexiBettaFish.jpg"
+    "file": "ABL-0001-FlexiBettaFish.png"
   },
   {
     "category": "DGN",
     "number": "0001",
     "description": "PurpleLeafDragon",
-    "file": "DGN-0001-PurpleLeafDragon.jpg"
+    "file": "DGN-0001-PurpleLeafDragon.png"
   },
   {
     "category": "DGN",
     "number": "0002",
     "description": "SunsetLeafDragon",
-    "file": "DGN-0002-SunsetLeafDragon.jpg"
+    "file": "DGN-0002-SunsetLeafDragon.png"
   },
   {
     "category": "OCN",
     "number": "0001",
     "description": "FlexiMantaRay",
-    "file": "OCN-0001-FlexiMantaRay.jpg"
+    "file": "OCN-0001-FlexiMantaRay.png"
   }
 ]

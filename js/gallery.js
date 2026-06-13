@@ -19,7 +19,7 @@
  *   EDU — Educational
  *   ART — Artistic / Decorative
  *
- * Example: "DGN-0001 Crystal Dragon Blue.jpg"
+ * Example: "DGN-0001 Crystal Dragon Blue.png"
  *   → SKU: DGN-0001
  *   → Description: Crystal Dragon Blue
  *   → Category: Dragons
