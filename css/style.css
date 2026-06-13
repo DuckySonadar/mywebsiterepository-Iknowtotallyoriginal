@@ -287,10 +287,9 @@ html, body {
   text-align: center;
   line-height: 1.4;
 }
-.side-block.orange { background: var(--lcars-orange); height: 20px; }
+.side-block.orange { background: var(--lcars-orange); height: 50px; }
 .side-block.gold   { background: var(--lcars-gold);   height: 16px; }
 .side-block.blue   { background: var(--lcars-blue);   height: 60px; }
-.side-block.orange { height: 50px; }
 .side-block.tan    { background: var(--lcars-tan);    height: 14px; }
 
 /* HOME FEATURES */

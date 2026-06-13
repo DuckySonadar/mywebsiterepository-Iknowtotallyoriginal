@@ -4,8 +4,18 @@
  */
 "use strict";
 
-// ─── DYNAMIC COPYRIGHT YEAR ───────────────────────────────────
+// ─── DYNAMIC COPYRIGHT YEAR & STARDATE ───────────────────────
 document.getElementById("copy-year").textContent = new Date().getFullYear();
+
+(function updateStardate() {
+  const el = document.getElementById("stardate-display");
+  if (!el) return;
+  const now = new Date();
+  const start = new Date(now.getFullYear(), 0, 0);
+  const dayOfYear = Math.floor((now - start) / 86400000);
+  const fraction = String(Math.floor((dayOfYear / 365) * 10)).padStart(1, "0");
+  el.textContent = `STARDATE ${now.getFullYear()}.${fraction}`;
+})();
 
 // ─── SECTION NAVIGATION ───────────────────────────────────────
 function showSection(id) {
@@ -82,7 +92,11 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  window.addEventListener("resize", resize);
+  let resizeTimer;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(resize, 150);
+  });
   resize();
 })();
 
