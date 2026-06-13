@@ -71,22 +71,42 @@ const MANUAL_INVENTORY = [
   // "MYH-0001 Articulating Phoenix.jpg",
 ];
 
-// ─── PARSE FILENAME ───────────────────────────────────────────
-function parseFilename(filename) {
-  // Strip folder path if present
-  const base = filename.split("/").pop();
-  // Strip extension
+// ─── CAMELCASE → DISPLAY TEXT ─────────────────────────────────
+function camelToDisplay(str) {
+  return str.replace(/([A-Z])/g, " $1").trim();
+}
+
+// ─── PARSE MANIFEST ENTRY ─────────────────────────────────────
+// Accepts either the new structured object format:
+//   { category, number, description, file }
+// or a legacy plain filename string:
+//   "AAA-0000-CamelCaseDescription.jpg"
+function parseEntry(entry) {
+  if (typeof entry === "object" && entry !== null) {
+    const { category: code, number: num, description, file } = entry;
+    if (!code || !num || !file) return null;
+    if (!CATEGORIES[code]) return null;
+    return {
+      sku: `${code}-${num}`,
+      code,
+      num,
+      description: camelToDisplay(description) || "(no description)",
+      src: `inventory/${file}`,
+    };
+  }
+
+  // Legacy: plain filename string
+  const base = entry.split("/").pop();
   const noExt = base.replace(/\.[^.]+$/, "");
-  // Match pattern: AAA-0000 Description
-  const match = noExt.match(/^([A-Z]{2,3})-(\d{4})\s*(.*)$/);
+  const match = noExt.match(/^([A-Z]{2,3})-(\d{4})[-\s](.*)$/);
   if (!match) return null;
-  const [, code, num, desc] = match;
+  const [, code, num, raw] = match;
   if (!CATEGORIES[code]) return null;
   return {
     sku: `${code}-${num}`,
     code,
     num,
-    description: desc.trim() || "(no description)",
+    description: camelToDisplay(raw) || "(no description)",
     src: `inventory/${base}`,
   };
 }
@@ -102,7 +122,7 @@ function buildGallery(files) {
 
   let parsed = 0;
   for (const f of files) {
-    const item = parseFilename(f);
+    const item = parseEntry(f);
     if (item) {
       grouped[item.code].push(item);
       parsed++;

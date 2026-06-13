@@ -1,6 +1,26 @@
 [
-  "ABL-0001 Flexi Betta Fish.jpg",
-  "DGN-0001 Purple Leaf Dragon.jpg",
-  "DGN-0002 Sunset Leaf Dragon.jpg",
-  "OCN-0001 Flexi Manta Ray.jpg"
+  {
+    "category": "ABL",
+    "number": "0001",
+    "description": "FlexiBettaFish",
+    "file": "ABL-0001-FlexiBettaFish.jpg"
+  },
+  {
+    "category": "DGN",
+    "number": "0001",
+    "description": "PurpleLeafDragon",
+    "file": "DGN-0001-PurpleLeafDragon.jpg"
+  },
+  {
+    "category": "DGN",
+    "number": "0002",
+    "description": "SunsetLeafDragon",
+    "file": "DGN-0002-SunsetLeafDragon.jpg"
+  },
+  {
+    "category": "OCN",
+    "number": "0001",
+    "description": "FlexiMantaRay",
+    "file": "OCN-0001-FlexiMantaRay.jpg"
+  }
 ]
