@@ -96,18 +96,19 @@ function parseEntry(entry) {
     };
   }
 
-  // Legacy: plain filename string
+  // Legacy: plain filename string (AAA-0000-Description-Designer.ext)
   const base = entry.split("/").pop();
   const noExt = base.replace(/\.[^.]+$/, "");
-  const match = noExt.match(/^([A-Z]{2,3})-(\d{4})[-\s](.*)$/);
+  const match = noExt.match(/^([A-Z]{2,3})-(\d{4})-([^-]+)(?:-(.+))?$/);
   if (!match) return null;
-  const [, code, num, raw] = match;
+  const [, code, num, rawDesc, rawDesigner] = match;
   if (!CATEGORIES[code]) return null;
   return {
     sku: `${code}-${num}`,
     code,
     num,
-    description: camelToDisplay(raw) || "(no description)",
+    description: camelToDisplay(rawDesc) || "(no description)",
+    designer: rawDesigner || null, // designer names are NOT camelToDisplay'd
     src: `inventory/${base}`,
   };
 }

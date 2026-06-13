@@ -4,27 +4,27 @@
     "number": "0001",
     "description": "FlexiBettaFish",
     "designer": "Cinderwing3D",
-    "file": "ABL-0001-FlexiBettaFish.png"
+    "file": "ABL-0001-FlexiBettaFish-Cinderwing3D.png"
   },
   {
     "category": "DGN",
     "number": "0001",
     "description": "PurpleLeafDragon",
-    "designer": "Cinderwing3D",
-    "file": "DGN-0001-PurpleLeafDragon.png"
+    "designer": "FlexSeeds",
+    "file": "DGN-0001-PurpleLeafDragon-FlexSeeds.png"
   },
   {
     "category": "DGN",
     "number": "0002",
     "description": "SunsetLeafDragon",
-    "designer": "Cinderwing3D",
-    "file": "DGN-0002-SunsetLeafDragon.png"
+    "designer": "FlexSeeds",
+    "file": "DGN-0002-SunsetLeafDragon-FlexSeeds.png"
   },
   {
     "category": "OCN",
     "number": "0001",
     "description": "FlexiMantaRay",
     "designer": "Cinderwing3D",
-    "file": "OCN-0001-FlexiMantaRay.png"
+    "file": "OCN-0001-FlexiMantaRay-Cinderwing3D.png"
   }
 ]
