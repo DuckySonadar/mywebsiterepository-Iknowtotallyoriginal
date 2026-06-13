@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Josiah's Maker Cave</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Share+Tech+Mono&family=Exo+2:wght@300;400;500&display=swap" rel="stylesheet" />
+</head>
+<body>
+
+  <!-- LCARS Top Bar / Nav -->
+  <header class="lcars-header">
+    <div class="lcars-elbow lcars-elbow-left"></div>
+    <nav class="lcars-nav">
+      <a href="#home" class="nav-btn" onclick="showSection('home')">HOME</a>
+      <a href="#gallery" class="nav-btn" onclick="showSection('gallery')">GALLERY</a>
+      <a href="#about" class="nav-btn" onclick="showSection('about')">ABOUT</a>
+    </nav>
+    <div class="lcars-title-bar">
+      <span class="title-eyebrow">STARDATE 2024.1</span>
+      <span class="title-main">JOSIAH'S MAKER CAVE</span>
+    </div>
+    <div class="lcars-elbow lcars-elbow-right"></div>
+  </header>
+
+  <!-- SCROLLABLE CONTENT FRAME -->
+  <main class="content-frame">
+
+    <!-- HOME SECTION -->
+    <section id="home" class="section active">
+      <div class="hero" style="background-image: url('cover-photo-1.jpg');">
+        <div class="hero-overlay"></div>
+        <div class="hero-content">
+          <div class="lcars-tag">MAKER DIVISION · SECTOR 7</div>
+          <h1 class="hero-title">JOSIAH'S<br/>MAKER CAVE</h1>
+          <p class="hero-sub">Where imagination meets the hum of the print bed</p>
+          <div class="lcars-divider-h"></div>
+          <p class="hero-desc">
+            Crafting articulating creatures, fidgets, puzzles, and wonders — one layer at a time.
+            Each piece designed to delight, built to last, and approved by the toughest critics in the house.
+          </p>
+          <button class="lcars-btn" onclick="showSection('gallery')">EXPLORE INVENTORY ›</button>
+        </div>
+        <div class="hero-side-panel">
+          <div class="side-block orange"></div>
+          <div class="side-block gold"></div>
+          <div class="side-block blue">SYSTEMS<br/>ONLINE</div>
+          <div class="side-block orange">PRINT<br/>ACTIVE</div>
+          <div class="side-block tan"></div>
+        </div>
+      </div>
+
+      <div class="home-features">
+        <div class="feature-row">
+          <div class="feature-card">
+            <div class="feature-icon">⬡</div>
+            <h3>PRINT IN PLACE</h3>
+            <p>Articulating designs that flex and flow straight off the build plate — no assembly required.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">◈</div>
+            <h3>KID APPROVED</h3>
+            <p>Every craft fair selection passes the ultimate quality test: unbridled enthusiasm from two very opinionated daughters.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">⬟</div>
+            <h3>LICENSED DESIGNS</h3>
+            <p>Proud commercial license holder for Cinderwing3D models — original designs, legally sold as quality physical prints.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- GALLERY SECTION -->
+    <section id="gallery" class="section">
+      <div class="section-header">
+        <div class="lcars-elbow-section"></div>
+        <h2 class="section-title">INVENTORY MANIFEST</h2>
+        <p class="section-sub">All items catalogued by category · Physical prints available at craft fairs and by request</p>
+      </div>
+
+      <div id="gallery-container">
+        <!-- Dynamically populated by gallery.js -->
+        <p class="loading-msg">[ SCANNING INVENTORY DATABASE... ]</p>
+      </div>
+    </section>
+
+    <!-- ABOUT SECTION -->
+    <section id="about" class="section">
+      <div class="section-header">
+        <div class="lcars-elbow-section"></div>
+        <h2 class="section-title">PERSONNEL FILE</h2>
+        <p class="section-sub">Maker · Tinkerer · Dad · 3D Print Enthusiast</p>
+      </div>
+
+      <div class="about-layout">
+        <div class="about-panel lcars-panel">
+          <div class="panel-label">PRIMARY DIRECTIVE</div>
+          <p>
+            Making things has always been more than a hobby — it's a way of thinking. There's something
+            deeply satisfying about starting with a spool of filament and ending up with something that
+            makes a kid's eyes light up.
+          </p>
+          <p>
+            Josiah's Maker Cave was born from a passion for the craft and a love of seeing 3D printed
+            toys bring real joy. Articulating dragons, fidget gadgets, puzzles, mythical creatures —
+            if it can be imagined, the printer can probably attempt it.
+          </p>
+        </div>
+
+        <div class="about-panel lcars-panel">
+          <div class="panel-label">MARKET RESEARCH PROTOCOL</div>
+          <p>
+            Deciding which prints to bring to a craft fair involves a rigorous evaluation process.
+            Candidate items are presented to two field experts — my daughters — and selections are made
+            based on the intensity of their excitement response.
+          </p>
+          <p>
+            Polite interest means it stays home. Grabbing it and running means it's in the bag.
+            This methodology has proven highly effective and is not subject to peer review.
+          </p>
+          <div class="stat-row">
+            <div class="stat"><span class="stat-num">2</span><span class="stat-label">QA Testers</span></div>
+            <div class="stat"><span class="stat-num">100%</span><span class="stat-label">Joy-Driven</span></div>
+            <div class="stat"><span class="stat-num">∞</span><span class="stat-label">Ideas Queued</span></div>
+          </div>
+        </div>
+
+        <div class="about-panel lcars-panel full-width">
+          <div class="panel-label">EQUIPMENT &amp; CAPABILITY</div>
+          <p>
+            All prints are produced in-house on consumer FDM printers using quality PLA and specialty
+            filaments. Every item is personally printed, inspected, and finished before it leaves
+            the cave. No outsourcing. No drop-shipping. Just layers.
+          </p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- STATIC BOTTOM BAR -->
+  <footer class="lcars-footer">
+    <div class="footer-left">
+      <div class="footer-block orange"></div>
+      <div class="footer-block gold"></div>
+    </div>
+    <div class="footer-content">
+      <div class="license-banner">
+        <span class="license-icon">⬡</span>
+        <span class="license-text">
+          <strong>AUTHORIZED COMMERCIAL SELLER</strong> — Physical prints of Cinderwing3D original designs
+          are sold under an active commercial license. All items are personally printed by the seller.
+          Digital files are not sold or distributed. Original designs by <strong>Cinderwing3D</strong>.
+        </span>
+        <span class="license-icon">⬡</span>
+      </div>
+      <div class="copyright-bar">
+        &copy; <span id="copy-year"></span> Randy Lindstrom · All Rights Reserved &nbsp;|&nbsp; Josiah's Maker Cave
+      </div>
+    </div>
+    <div class="footer-right">
+      <div class="footer-block blue"></div>
+      <div class="footer-block tan"></div>
+    </div>
+  </footer>
+
+  <script src="js/gallery.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
