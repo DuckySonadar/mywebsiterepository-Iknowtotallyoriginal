@@ -487,6 +487,7 @@ html, body {
   font-size: 0.68rem;
   letter-spacing: 0.15em;
   color: var(--lcars-orange);
+  text-align: center;
 }
 
 .item-desc {
@@ -494,6 +495,15 @@ html, body {
   font-size: 0.82rem;
   line-height: 1.45;
   color: var(--lcars-text);
+  text-align: center;
+}
+
+.item-designer {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.1em;
+  color: var(--lcars-text-dim);
+  text-align: center;
 }
 
 /* No items state */

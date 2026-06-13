@@ -83,7 +83,7 @@ function camelToDisplay(str) {
 //   "AAA-0000-CamelCaseDescription.jpg"
 function parseEntry(entry) {
   if (typeof entry === "object" && entry !== null) {
-    const { category: code, number: num, description, file } = entry;
+    const { category: code, number: num, description, designer, file } = entry;
     if (!code || !num || !file) return null;
     if (!CATEGORIES[code]) return null;
     return {
@@ -91,6 +91,7 @@ function parseEntry(entry) {
       code,
       num,
       description: camelToDisplay(description) || "(no description)",
+      designer: designer || null,
       src: `inventory/${file}`,
     };
   }
@@ -187,7 +188,8 @@ function buildGallery(files) {
           </div>
         </div>
         <div class="item-sku">${item.sku}</div>
-        <div class="item-desc">${item.description}</div>`;
+        <div class="item-desc">${item.description}</div>
+        ${item.designer ? `<div class="item-designer">Design by ${item.designer}</div>` : ""}`;
       grid.appendChild(card);
     }
   }
