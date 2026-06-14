@@ -18,22 +18,22 @@ document.getElementById("copy-year").textContent = new Date().getFullYear();
 })();
 
 // ─── SECTION NAVIGATION ───────────────────────────────────────
+// The left rail buttons connect to the active content frame; the
+// active rail button is highlighted with its connecting tab.
 function showSection(id) {
   document.querySelectorAll(".section").forEach(s => s.classList.remove("active"));
-  document.querySelectorAll(".nav-btn").forEach(b => b.classList.remove("active"));
 
   const target = document.getElementById(id);
   if (target) {
     target.classList.add("active");
     // Scroll content frame to top when switching sections
-    document.querySelector(".content-frame").scrollTop = 0;
+    const frame = document.querySelector(".content-frame");
+    if (frame) frame.scrollTop = 0;
   }
 
-  // Highlight active nav button
-  document.querySelectorAll(".nav-btn").forEach(btn => {
-    if (btn.getAttribute("onclick")?.includes(`'${id}'`)) {
-      btn.classList.add("active");
-    }
+  // Highlight active rail button (matched by data-target)
+  document.querySelectorAll(".rail-btn").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.target === id);
   });
 }
 
@@ -48,15 +48,13 @@ window.addEventListener("hashchange", routeFromHash);
 document.addEventListener("DOMContentLoaded", () => {
   routeFromHash();
 
-  // Override nav links to use showSection (prevents full reload)
-  document.querySelectorAll(".nav-btn").forEach(btn => {
+  // Any element with data-target navigates (rail buttons + hero CTA)
+  document.querySelectorAll("[data-target]").forEach(btn => {
     btn.addEventListener("click", e => {
-      const match = btn.getAttribute("onclick")?.match(/'(\w+)'/);
-      if (match) {
-        e.preventDefault();
-        history.pushState(null, "", `#${match[1]}`);
-        showSection(match[1]);
-      }
+      e.preventDefault();
+      const id = btn.dataset.target;
+      history.pushState(null, "", `#${id}`);
+      showSection(id);
     });
   });
 });

@@ -176,7 +176,8 @@ function buildGallery(files) {
       const card = document.createElement("div");
       card.className = "item-card";
       card.innerHTML = `
-        <div class="item-img-wrap">
+        <div class="item-img-wrap" role="button" tabindex="0"
+             aria-label="Enlarge ${item.sku} — ${item.description}">
           <img
             src="${item.src}"
             alt="${item.sku} — ${item.description}"
@@ -191,6 +192,17 @@ function buildGallery(files) {
         <div class="item-sku">${item.sku}</div>
         <div class="item-desc">${item.description}</div>
         ${item.designer ? `<div class="item-designer">Design by ${item.designer}</div>` : ""}`;
+
+      // Click / keyboard to open the enlarged preview (Frame 3)
+      const wrap = card.querySelector(".item-img-wrap");
+      wrap.addEventListener("click", () => openLightbox(item));
+      wrap.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openLightbox(item);
+        }
+      });
+
       grid.appendChild(card);
     }
   }
@@ -230,6 +242,54 @@ async function loadInventory() {
   // 4. Nothing worked — show guidance
   buildGallery([]);
 }
+
+// ─── LIGHTBOX (Frame 3 — enlarged image preview) ──────────────
+// Gallery thumbnails use the small image; the preview loads the
+// matching large file:  inventory/Large-<SKU>.png
+function openLightbox(item) {
+  const lb = document.getElementById("lightbox");
+  if (!lb) return;
+
+  const img = lb.querySelector(".lightbox-img");
+  const large = `inventory/Large-${item.sku}.png`;
+
+  // Fall back to the small image if the large file is missing.
+  img.onerror = () => { img.onerror = null; img.src = item.src; };
+  img.src = large;
+  img.alt = `${item.sku} — ${item.description}`;
+
+  lb.querySelector(".lb-sku").textContent = item.sku;
+  lb.querySelector(".lb-cat").textContent = CATEGORIES[item.code]?.name || "";
+  lb.querySelector(".lb-desc").textContent = item.description;
+  const designerEl = lb.querySelector(".lb-designer");
+  designerEl.textContent = item.designer ? `Design by ${item.designer}` : "";
+
+  lb.hidden = false;
+  // next frame so the transition runs (grow-in)
+  requestAnimationFrame(() => lb.classList.add("open"));
+}
+
+function closeLightbox() {
+  const lb = document.getElementById("lightbox");
+  if (!lb || lb.hidden) return;
+  lb.classList.remove("open"); // shrink-out
+  setTimeout(() => {
+    lb.hidden = true;
+    lb.querySelector(".lightbox-img").src = "";
+  }, 260);
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  const lb = document.getElementById("lightbox");
+  if (lb) {
+    lb.querySelectorAll("[data-close]").forEach((el) =>
+      el.addEventListener("click", closeLightbox)
+    );
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeLightbox();
+  });
+});
 
 // ─── INIT ─────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", loadInventory);
