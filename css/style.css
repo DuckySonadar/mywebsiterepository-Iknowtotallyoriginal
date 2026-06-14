@@ -247,6 +247,13 @@ html, body {
   margin-bottom: 6vh;
 }
 
+/* Constrain the gallery subtitle to the width of the word INVENTORY:
+   min-content shrinks the wrapper to its widest unbreakable element
+   (the single big title word), so the subtitle wraps within it. */
+.inventory-head { width: min-content; }
+.inventory-head .section-title { white-space: nowrap; }
+.inventory-head .section-sub { max-width: none; }
+
 /* ============================================================
    GALLERY (still a grid)
    ============================================================ */
