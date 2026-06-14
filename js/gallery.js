@@ -41,19 +41,20 @@
 "use strict";
 
 // ─── CATEGORY REGISTRY ────────────────────────────────────────
+// Colors cycle through the brutalist accent palette.
 const CATEGORIES = {
-  DGN: { name: "Dragons",                     color: "#ff9900", icon: "🐉" },
-  OCN: { name: "Ocean Creatures",              color: "#aaccff", icon: "🐙" },
-  DSR: { name: "Dinosaurs & Prehistoric",      color: "#99dd66", icon: "🦕" },
-  MYH: { name: "Mythical Creatures",           color: "#cc88ff", icon: "🦄" },
-  PZL: { name: "Puzzles",                      color: "#ffcc00", icon: "🧩" },
-  FGT: { name: "Fidgets",                      color: "#ff7755", icon: "🌀" },
-  GTL: { name: "Gadgets & Tools",               color: "#66ffcc", icon: "🔧" },
-  MBR: { name: "Robots & Mechs",               color: "#66ccff", icon: "🤖" },
-  SCI: { name: "Science, Space & Tech",        color: "#55eecc", icon: "🚀" },
-  EDU: { name: "Educational",                  color: "#aaffaa", icon: "📐" },
-  ART: { name: "Art & Decorative",             color: "#ffcc99", icon: "🎨" },
-  ABL: { name: "Adorable",                     color: "#ffaacc", icon: "🐣" },
+  DGN: { name: "Dragons",                     color: "#F54D27", icon: "🐉" },
+  OCN: { name: "Ocean Creatures",              color: "#25E8BB", icon: "🐙" },
+  DSR: { name: "Dinosaurs & Prehistoric",      color: "#F5E427", icon: "🦕" },
+  MYH: { name: "Mythical Creatures",           color: "#B038D1", icon: "🦄" },
+  PZL: { name: "Puzzles",                      color: "#F54D27", icon: "🧩" },
+  FGT: { name: "Fidgets",                      color: "#25E8BB", icon: "🌀" },
+  GTL: { name: "Gadgets & Tools",              color: "#F5E427", icon: "🔧" },
+  MBR: { name: "Robots & Mechs",               color: "#B038D1", icon: "🤖" },
+  SCI: { name: "Science, Space & Tech",        color: "#25E8BB", icon: "🚀" },
+  EDU: { name: "Educational",                  color: "#F5E427", icon: "📐" },
+  ART: { name: "Art & Decorative",             color: "#F54D27", icon: "🎨" },
+  ABL: { name: "Adorable",                     color: "#B038D1", icon: "🐣" },
 };
 
 // ─── MANUAL INVENTORY ─────────────────────────────────────────
@@ -163,9 +164,8 @@ function buildGallery(files) {
 
     section.innerHTML = `
       <div class="category-header">
-        <div class="category-pill" style="background:${cat.color};">${code}</div>
-        <span class="category-name">${cat.icon}&nbsp;&nbsp;${cat.name}</span>
-        <div class="category-line" style="background:linear-gradient(to right, ${cat.color}, transparent);"></div>
+        <span class="category-pill" style="background:${cat.color};">${code}</span>
+        <span class="category-name" style="color:${cat.color};">${cat.name}</span>
       </div>
       <div class="items-grid" id="grid-${code}"></div>`;
 
