@@ -10,7 +10,7 @@
  *   DGN — Dragons
  *   OCN — Ocean Creatures
  *   DSR — Dinosaurs / Prehistoric
- *   MYH — Mythical Creatures
+ *   MYT — Mythical Creatures
  *   PZL — Puzzles
  *   FGT — Fidgets
  *   GTL — Gadgets & Tools
@@ -46,7 +46,7 @@ const CATEGORIES = {
   DGN: { name: "Dragons",                     color: "#F54D27", icon: "🐉" },
   OCN: { name: "Ocean Creatures",              color: "#25E8BB", icon: "🐙" },
   DSR: { name: "Dinosaurs & Prehistoric",      color: "#F5E427", icon: "🦕" },
-  MYH: { name: "Mythical Creatures",           color: "#B038D1", icon: "🦄" },
+  MYT: { name: "Mythical Creatures",           color: "#B038D1", icon: "🦄" },
   PZL: { name: "Puzzles",                      color: "#F54D27", icon: "🧩" },
   FGT: { name: "Fidgets",                      color: "#25E8BB", icon: "🌀" },
   GTL: { name: "Gadgets & Tools",              color: "#F5E427", icon: "🔧" },

@@ -2,9 +2,30 @@
   {
     "category": "ABL",
     "number": "0001",
-    "description": "FlexiBettaFish",
+    "description": "HatchlingFlexiBettaFish",
     "designer": "Cinderwing3D",
-    "file": "ABL-0001-FlexiBettaFish-Cinderwing3D.png"
+    "file": "ABL-0001-HatchlingFlexiBettaFish-Cinderwing3D.png"
+  },
+  {
+    "category": "ABL",
+    "number": "0002",
+    "description": "GlowingCat",
+    "designer": "Cinderwing3D",
+    "file": "ABL-0002-GlowingCat-Cinderwing3D.png"
+  },
+  {
+    "category": "ABL",
+    "number": "0003",
+    "description": "HatchlingRainbowAxolotl",
+    "designer": "Cinderwing3D",
+    "file": "ABL-0003-HatchlingRainbowAxolotl-Cinderwing3D.png"
+  },
+  {
+    "category": "ABL",
+    "number": "0004",
+    "description": "LizardPurpleTeal",
+    "designer": "Cinderwing3D",
+    "file": "ABL-0004-LizardPurpleTeal-Cinderwing3D.png"
   },
   {
     "category": "DGN",
@@ -21,10 +42,59 @@
     "file": "DGN-0002-SunsetLeafDragon-FlexSeeds.png"
   },
   {
+    "category": "DGN",
+    "number": "0003",
+    "description": "AxolotlDragonOceanBlue",
+    "designer": "Cinderwing3D",
+    "file": "DGN-0003-AxolotlDragonOceanBlue-Cinderwing3D.png"
+  },
+  {
+    "category": "DGN",
+    "number": "0004",
+    "description": "WingDragonOceanBlue",
+    "designer": "Cinderwing3D",
+    "file": "DGN-0004-WingDragonOceanBlue-Cinderwing3D.png"
+  },
+  {
+    "category": "DGN",
+    "number": "0005",
+    "description": "HatchlingFeatherDragonBlueYellow",
+    "designer": "Cinderwing3D",
+    "file": "DGN-0005-HatchlingFeatherDragonBlueYellow-Cinderwing3D.png"
+  },
+  {
+    "category": "DGN",
+    "number": "0006",
+    "description": "HatchingDragonYellowPink",
+    "designer": "Cinderwing3D",
+    "file": "DGN-0006-HatchingDragonYellowPink-Cinderwing3D.png"
+  },
+  {
+    "category": "MYT",
+    "number": "0001",
+    "description": "HatchlingGlowingUnicorn",
+    "designer": "Cinderwing3D",
+    "file": "MYT-0001-HatchlingGlowingUnicorn-Cinderwing3D.png"
+  },
+  {
+    "category": "MYT",
+    "number": "0002",
+    "description": "HatchlingUnicornSunset",
+    "designer": "Cinderwing3D",
+    "file": "MYT-0002-HatchlingUnicornSunset-Cinderwing3d.png"
+  },
+  {
     "category": "OCN",
     "number": "0001",
-    "description": "FlexiMantaRay",
+    "description": "HatchlingFlexiMantaRay",
     "designer": "Cinderwing3D",
-    "file": "OCN-0001-FlexiMantaRay-Cinderwing3D.png"
+    "file": "OCN-0001-HatchlingFlexiMantaRay-Cinderwing3D.png"
+  },
+  {
+    "category": "OCN",
+    "number": "0002",
+    "description": "HatchlingNarwhal",
+    "designer": "Cinderwing3D",
+    "file": "OCN-0002-HatchlingNarwhal-Cinderwing3D.png"
   }
 ]
