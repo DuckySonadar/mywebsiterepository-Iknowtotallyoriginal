@@ -16,6 +16,9 @@ josiahs-maker-cave/
 │   ├── FGT-0001 Infinity Cube.jpg
 │   └── ...
 ├── inventory-manifest.json    ← Generate this for GitHub Pages (see below)
+├── tools/                     ← Embedded browser apps (see SDF Editor below)
+│   ├── sdf-editor.html
+│   └── sdf-editor-blob.html
 ├── css/
 │   └── style.css
 └── js/
@@ -113,6 +116,32 @@ cover-photo-1.jpg
 
 The image will be displayed full-bleed on the Home page with a dark overlay.
 Recommended: a wide landscape photo of a cool 3D print, at least 1920×1080px.
+
+---
+
+## SDF Editor section
+
+The **EDITOR** tab (`#editor`) hosts the flexi fish signed-distance designers
+in an iframe. Two builds ship in `tools/`:
+
+| File                          | Source in Command-Center      | What it is                                   |
+|-------------------------------|-------------------------------|----------------------------------------------|
+| `tools/sdf-editor.html`       | `fish_designer_nurbs.html`    | NURBS build — draw views, Shape JSON export  |
+| `tools/sdf-editor-blob.html`  | `fish_designer.html`          | Original blob build — sliders, Config JSON   |
+
+Both are self-contained (no dependencies, no network calls, no analytics) and
+run entirely in the visitor's browser. `main.js` leaves the iframe empty until
+the section is opened for the first time, so the editor's per-frame solve never
+costs anything on the Home or Gallery pages.
+
+**Updating them:** these are copies. Edit the originals in the
+[Command-Center](https://github.com/DuckySonadar/Command-Center) repo, then
+re-copy:
+
+```
+cp ../Command-Center/fish_designer_nurbs.html tools/sdf-editor.html
+cp ../Command-Center/fish_designer.html       tools/sdf-editor-blob.html
+```
 
 ---
 
