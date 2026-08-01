@@ -126,7 +126,7 @@ iframe, switched by the tab row. Both ship in `tools/`:
 
 | File                           | Source in Command-Center | What it is                                          |
 |--------------------------------|--------------------------|-----------------------------------------------------|
-| `tools/sdf-editor.html`        | `sdf_editor.html`        | The general SDF modeller — primitives, cut/keep, STL |
+| `tools/sdf-editor.html`        | `sdf_editor.html`        | **MetaMeld** — the general SDF modeller: primitives, cut/keep, bodies, STL |
 | `tools/fish-editor-nurbs.html` | `fish_designer_nurbs.html` | The NURBS flexi fish — draw views, Shape JSON       |
 
 Both are self-contained (no dependencies, no network calls, no analytics) and
@@ -147,8 +147,9 @@ cp ../Command-Center/sdf_editor.html          tools/sdf-editor.html
 cp ../Command-Center/fish_designer_nurbs.html tools/fish-editor-nurbs.html
 ```
 
-`sdf_editor.html` currently lives on Command-Center's
-`claude/sdf-editor-iphone-sw1f79` branch rather than `main`.
+The filenames here predate the app being named MetaMeld and are deliberately
+left alone — `tools/sdf-editor.html` is the URL already live and already
+saved to a Home Screen, and nothing in either file is path-relative.
 
 One edit is applied on top of the copy: the editor's **‹ Maker Cave** link
 gets `target="_top"` so it escapes the iframe instead of loading the site
