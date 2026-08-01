@@ -103,9 +103,11 @@ html, body {
 .nav-btn:nth-child(1) { color: var(--c-orange); }
 .nav-btn:nth-child(2) { color: var(--c-mint); }
 .nav-btn:nth-child(3) { color: var(--c-purple); }
+.nav-btn:nth-child(4) { color: var(--c-yellow); }
 .nav-btn:nth-child(1):hover, .nav-btn:nth-child(1).active { background: var(--c-orange); color: #000; }
 .nav-btn:nth-child(2):hover, .nav-btn:nth-child(2).active { background: var(--c-mint);   color: #000; }
 .nav-btn:nth-child(3):hover, .nav-btn:nth-child(3).active { background: var(--c-purple); color: #000; }
+.nav-btn:nth-child(4):hover, .nav-btn:nth-child(4).active { background: var(--c-yellow); color: #000; }
 
 /* ---- Content frame ---- */
 .content-frame {
@@ -429,6 +431,100 @@ html, body {
 }
 
 /* ============================================================
+   SDF EDITOR — copy blocks, source switcher, embedded app
+   ============================================================ */
+.editor-intro {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 48px;
+  max-width: 1200px;
+  margin-bottom: 5vh;
+}
+.editor-block p {
+  font-size: 1.02rem;
+  line-height: 1.75;
+  color: var(--text);
+}
+.editor-block strong { color: var(--white); }
+
+.editor-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.editor-tabs { display: flex; gap: 10px; flex-wrap: wrap; }
+
+.editor-tab {
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.editor-tab:hover { color: var(--white); }
+.editor-tab.active { background: var(--c-yellow); color: #000; }
+
+.editor-launch {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--c-mint);
+  text-decoration: none;
+  border-bottom: 2px solid var(--c-mint);
+  padding-bottom: 3px;
+  transition: color 0.12s, border-color 0.12s;
+}
+.editor-launch:hover { color: var(--white); border-color: var(--white); }
+
+.editor-tabnote {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 16px;
+}
+
+/* The editor is a full app in its own document: give it a fixed slab of
+   viewport and let it lay itself out inside. */
+.editor-stage {
+  width: 100%;
+  max-width: 1400px;
+  height: min(78vh, 820px);
+  min-height: 460px;
+  border: 2px solid var(--c-yellow);
+  background: #101418; /* editor's own backdrop, avoids a white flash */
+}
+
+.editor-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+.editor-note {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  line-height: 1.8;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  max-width: 760px;
+  padding: 18px 0 9vh;
+}
+
+/* ============================================================
    ENLARGED IMAGE PREVIEW
    ============================================================ */
 .lightbox {
@@ -545,6 +641,13 @@ html, body {
   .nav-btn { font-size: 1.25rem; }
   .lightbox-frame { width: 94vw; height: 92vh; padding: 16px; gap: 14px; }
   .lb-desc { font-size: 1.5rem; }
+}
+
+@media (max-width: 768px) {
+  /* the editor docks its panel below the canvas here, so it needs the height —
+     but it swallows touch, so leave some page above and below it to scroll by */
+  .editor-stage { height: 72vh; }
+  .editor-intro { gap: 32px; }
 }
 
 @media (max-width: 480px) {

@@ -23,6 +23,7 @@
         <button class="nav-btn" data-target="home">HOME</button>
         <button class="nav-btn" data-target="gallery">GALLERY</button>
         <button class="nav-btn" data-target="about">ABOUT</button>
+        <button class="nav-btn" data-target="editor">EDITOR</button>
       </nav>
     </header>
 
@@ -129,6 +130,66 @@
             </p>
           </div>
         </div>
+      </section>
+
+      <!-- SDF EDITOR -->
+      <section id="editor" class="section">
+        <h2 class="section-title accent-yellow">SDF EDITOR</h2>
+        <p class="section-sub">
+          Signed-distance modelling in the browser · Export a printable STL
+        </p>
+
+        <div class="editor-intro">
+          <div class="editor-block">
+            <h3 class="block-h accent-orange">WHAT IT IS</h3>
+            <p>
+              A shape in here isn't a mesh — it's a signed distance field, math that answers
+              "how far am I from the surface?" at any point in space. Both editors solve that
+              field live and mesh it into the print you see on screen.
+            </p>
+          </div>
+          <div class="editor-block">
+            <h3 class="block-h accent-mint">SDF EDITOR</h3>
+            <p>
+              The general-purpose one. Stack up primitives, cut and keep them against each
+              other, and the GPU raymarches the result as you drag. Built touch-first, so it
+              works on a phone as well as it does on a desktop.
+            </p>
+          </div>
+          <div class="editor-block">
+            <h3 class="block-h accent-purple">NURBS FISH</h3>
+            <p>
+              The purpose-built one. <strong>Draw side</strong> and <strong>Draw top</strong>
+              let you pull the profile curves around by their control points, and the print's
+              head, dorsal, tail, and caudal regions follow what you draw.
+            </p>
+          </div>
+        </div>
+
+        <div class="editor-bar">
+          <div class="editor-tabs">
+            <button class="editor-tab active" data-editor="tools/sdf-editor.html">SDF EDITOR</button>
+            <button class="editor-tab" data-editor="tools/fish-editor-nurbs.html">NURBS FISH</button>
+          </div>
+          <a class="editor-launch" href="tools/sdf-editor.html" target="_blank" rel="noopener">
+            OPEN FULL SCREEN ↗
+          </a>
+        </div>
+
+        <p class="editor-tabnote">
+          Both export a printable binary STL · Millimeters, +Z up, z&nbsp;=&nbsp;0 is the build plate
+        </p>
+
+        <div class="editor-stage">
+          <!-- src is attached by main.js the first time this section opens -->
+          <iframe class="editor-frame" title="SDF editor" data-src="tools/sdf-editor.html"></iframe>
+        </div>
+
+        <p class="editor-note">
+          Runs entirely on your machine — nothing is uploaded. These are full-screen apps
+          by design, so open one in its own tab if you're really modelling; on a phone,
+          Share → Add to Home Screen makes it launch like an app.
+        </p>
       </section>
 
     </main>
