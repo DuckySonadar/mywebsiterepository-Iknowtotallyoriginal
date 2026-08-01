@@ -136,41 +136,40 @@
       <section id="editor" class="section">
         <h2 class="section-title accent-yellow">SDF EDITOR</h2>
         <p class="section-sub">
-          Signed-distance design lab · Draw the fish · Export a printable STL
+          Signed-distance modelling in the browser · Export a printable STL
         </p>
 
         <div class="editor-intro">
           <div class="editor-block">
             <h3 class="block-h accent-orange">WHAT IT IS</h3>
             <p>
-              Every model in here is defined as a signed distance field — math that answers
-              "how far am I from the surface?" at any point in space. The editor solves that
-              field live and meshes it into the print you see on screen.
+              A shape in here isn't a mesh — it's a signed distance field, math that answers
+              "how far am I from the surface?" at any point in space. Both editors solve that
+              field live and mesh it into the print you see on screen.
             </p>
           </div>
           <div class="editor-block">
-            <h3 class="block-h accent-mint">HOW TO DRIVE IT</h3>
+            <h3 class="block-h accent-mint">SDF EDITOR</h3>
             <p>
-              Drag to orbit, and reshape the fish with the sliders on the right. The NURBS
-              build adds <strong>Draw side</strong> and <strong>Draw top</strong> — pull the
-              profile curves around by their control points and the head, dorsal, tail, and
-              caudal regions follow what you draw.
+              The general-purpose one. Stack up primitives, cut and keep them against each
+              other, and the GPU raymarches the result as you drag. Built touch-first, so it
+              works on a phone as well as it does on a desktop.
             </p>
           </div>
           <div class="editor-block">
-            <h3 class="block-h accent-purple">TAKING IT HOME</h3>
+            <h3 class="block-h accent-purple">NURBS FISH</h3>
             <p>
-              <strong>Save STL</strong> builds the real print-in-place plate in your browser —
-              segmented body, joint pins and cavities, ball-socket fins. The JSON export hands
-              the same design to the Python toolchain back in the cave.
+              The purpose-built one. <strong>Draw side</strong> and <strong>Draw top</strong>
+              let you pull the profile curves around by their control points, and the print's
+              head, dorsal, tail, and caudal regions follow what you draw.
             </p>
           </div>
         </div>
 
         <div class="editor-bar">
           <div class="editor-tabs">
-            <button class="editor-tab active" data-editor="tools/sdf-editor.html">NURBS FISH</button>
-            <button class="editor-tab" data-editor="tools/sdf-editor-blob.html">BLOB FISH</button>
+            <button class="editor-tab active" data-editor="tools/sdf-editor.html">SDF EDITOR</button>
+            <button class="editor-tab" data-editor="tools/fish-editor-nurbs.html">NURBS FISH</button>
           </div>
           <a class="editor-launch" href="tools/sdf-editor.html" target="_blank" rel="noopener">
             OPEN FULL SCREEN ↗
@@ -178,19 +177,18 @@
         </div>
 
         <p class="editor-tabnote">
-          NURBS FISH — curve-driven, with the drawing views ·
-          BLOB FISH — the original slider-only build
+          Both export a printable binary STL · Millimeters, +Z up, z&nbsp;=&nbsp;0 is the build plate
         </p>
 
         <div class="editor-stage">
           <!-- src is attached by main.js the first time this section opens -->
-          <iframe class="editor-frame" title="Flexi fish SDF editor" data-src="tools/sdf-editor.html"></iframe>
+          <iframe class="editor-frame" title="SDF editor" data-src="tools/sdf-editor.html"></iframe>
         </div>
 
         <p class="editor-note">
-          Runs entirely on your machine — nothing is uploaded, nothing is saved.
-          Meshing a high-quality plate takes a few seconds and likes a real keyboard
-          and mouse; on a phone the controls dock to the bottom half of the frame.
+          Runs entirely on your machine — nothing is uploaded. These are full-screen apps
+          by design, so open one in its own tab if you're really modelling; on a phone,
+          Share → Add to Home Screen makes it launch like an app.
         </p>
       </section>
 

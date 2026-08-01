@@ -34,13 +34,14 @@ function loadEditor() {
   if (frame && !frame.src && frame.dataset.src) frame.src = frame.dataset.src;
 }
 
-function selectEditor(src) {
+function selectEditor(src, label) {
   const frame = document.querySelector(".editor-frame");
   const launch = document.querySelector(".editor-launch");
   if (!frame) return;
 
   // Swap it live if the editor is already up; otherwise just arm loadEditor().
   frame.dataset.src = src;
+  frame.title = label;
   if (frame.src) frame.src = src;
   if (launch) launch.href = src;
 }
@@ -71,7 +72,7 @@ document.addEventListener("DOMContentLoaded", () => {
     tab.addEventListener("click", () => {
       document.querySelectorAll(".editor-tab").forEach(t => t.classList.remove("active"));
       tab.classList.add("active");
-      selectEditor(tab.dataset.editor);
+      selectEditor(tab.dataset.editor, tab.textContent.trim());
     });
   });
 });
