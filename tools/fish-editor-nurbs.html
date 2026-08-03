@@ -87,7 +87,7 @@
     <button data-q="1.4">Draft</button><button data-q="1.0" class="on">Standard</button><button data-q="0.8">High</button>
   </div>
   <button class="btn" id="exportBtn">Shape JSON</button>
-  <button class="btn" id="fieldBtn">Field JSON</button>
+  <button class="btn" id="fieldBtn" title="Bake the fish to a field file MetaMeld can open">Field JSON</button>
   <button class="btn" id="saveFishBtn">Save</button>
   <button class="btn" id="openFishBtn">Open</button>
   <input type="file" id="fishFile" accept=".json,application/json"
@@ -2427,15 +2427,23 @@ document.getElementById('fieldBtn').onclick = () => {
                   p: [(B.x0 + B.x1) / 2, (B.y0 + B.y1) / 2, (B.z0 + B.z1) / 2],
                   r: [0, 0, 0], d: box, round: FIELD_RANGE,
                   mx: false, my: false, mz: false }],
-        field: { nx: m.nx, ny: m.ny, nz: m.nz, box, range: FIELD_RANGE,
-                 data: btoa(bin) }
+        // the library form, and named, so it reads as "Fish" there rather
+        // than as an anonymous baked blob
+        fields: [{ name: 'Fish', nx: m.nx, ny: m.ny, nz: m.nz, box,
+                   range: FIELD_RANGE, data: btoa(bin) }]
       };
       const text = JSON.stringify(doc);
-      document.getElementById('exportText').value = text;
-      document.getElementById('cfgWrap').style.display = 'none';
-      overlay.style.display = 'flex';
+      // a file, not a textarea: this is half a megabyte of base64 and nobody
+      // is selecting that by hand. MetaMeld's Open reads it directly.
+      const blob = new Blob([text], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'fish_field.json';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
       st.textContent = `field ${m.nx}x${m.ny}x${m.nz} at ${res} mm · `
-        + `${(text.length / 1024 / 1024).toFixed(2)} MB · paste into MetaMeld`;
+        + `${(text.length / 1024 / 1024).toFixed(2)} MB · `
+        + `saved fish_field.json — open it in MetaMeld`;
     } catch (e) { showErr('field export: ' + e.message); st.textContent = ''; }
   }, 30);
 };

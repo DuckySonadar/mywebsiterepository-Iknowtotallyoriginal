@@ -2343,8 +2343,16 @@ $('fileInp').onchange = e => {
     try {
       const d = JSON.parse(r.result);
       const list = (d && (d.nodes || d)) || [];
-      if (!Array.isArray(list) || !list.some(n => n && PRIMS[n.t]))
-        throw new Error('no shapes in that file');
+      if (!Array.isArray(list) || !list.some(n => n && PRIMS[n.t])) {
+        // a fish shape file is curves, which this editor has no evaluator for.
+        // It is a reasonable thing to try, so say what to do instead.
+        const fish = d && (d.kind === 'flexifish-nurbs'
+                           || (d.shape && d.shape.curves) || d.curves);
+        throw new Error(fish
+          ? 'that is a fish shape file — use Field JSON in the fish editor '
+            + 'to bake it, then open that'
+          : 'no shapes in that file');
+      }
       snapshot();
       adopt(d);
       sel = 0;
