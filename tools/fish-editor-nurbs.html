@@ -87,6 +87,7 @@
     <button data-q="1.4">Draft</button><button data-q="1.0" class="on">Standard</button><button data-q="0.8">High</button>
   </div>
   <button class="btn" id="exportBtn">Shape JSON</button>
+  <button class="btn" id="fieldBtn">Field JSON</button>
   <button class="btn" id="stlBtn">Save STL</button>
   <button class="btn" id="camBtn">Recenter</button>
   <span id="status">building…</span>
@@ -1301,6 +1302,9 @@ function buildMesh(shape, overrides, res, showCuts, field) {
   mesh.size = [B.x1 - B.x0, B.y1 - B.y0, B.z1 - B.z0];
   mesh.bounds = B;
   mesh.regions = regionSummary(C);
+  // the raw grid, for the MetaMeld field export: same samples the mesh came
+  // from, so what you cut against there is what prints here
+  mesh.vol = vol; mesh.nx = nx; mesh.ny = ny; mesh.nz = nz; mesh.res = res;
   return mesh;
 }
 
@@ -2287,6 +2291,54 @@ document.getElementById('exportBtn').onclick = () => {
   if (has) document.getElementById('cfgText').value = JSON.stringify(cfg, null, 1);
   overlay.style.display = 'flex';
 };
+// ---- MetaMeld field export -------------------------------------------
+// The fish is swept from curves, so no arrangement of MetaMeld's primitives
+// is it. Its distance field is, though, and that is all a cutter needs to be
+// positioned against: sample the same grid the mesh is built from, quantise a
+// byte per sample across +/-RANGE mm, and hand over a MetaMeld document with
+// one `field` node in it.
+const FIELD_RANGE = 8.0;          // mm at the ends of the byte
+document.getElementById('fieldBtn').onclick = () => {
+  const res = parseFloat(prompt(
+    'Grid spacing in mm.\n\n0.8 is a good balance; 0.5 is finer but the '
+    + 'document grows as the cube of it.', '0.8') || '0');
+  if (!(res > 0.05)) return;
+  const st = document.getElementById('status');
+  st.textContent = 'sampling the field for MetaMeld…';
+  setTimeout(() => {
+    try {
+      const m = NurbsCore.buildMesh(shapeForBuild(), face, res, false, 'plate');
+      if (!m.bounds) throw new Error(m.errors[0] || 'nothing to sample');
+      const B = m.bounds, v = m.vol;
+      const q = new Uint8Array(v.length);
+      for (let i = 0; i < v.length; i++) {
+        const t = Math.max(-1, Math.min(1, v[i] / FIELD_RANGE));
+        q[i] = Math.round((t + 1) / 2 * 255);
+      }
+      let bin = '';
+      for (let i = 0; i < q.length; i += 8192)
+        bin += String.fromCharCode.apply(null, q.subarray(i, i + 8192));
+      const box = [(B.x1 - B.x0) / 2, (B.y1 - B.y0) / 2, (B.z1 - B.z0) / 2];
+      const doc = {
+        version: 2,
+        bodies: [{ id: 0, name: 'Fish', on: true }],
+        nodes: [{ t: 'field', on: true, op: 'add', k: 0, b: 0, tg: null,
+                  p: [(B.x0 + B.x1) / 2, (B.y0 + B.y1) / 2, (B.z0 + B.z1) / 2],
+                  r: [0, 0, 0], d: box, round: FIELD_RANGE,
+                  mx: false, my: false, mz: false }],
+        field: { nx: m.nx, ny: m.ny, nz: m.nz, box, range: FIELD_RANGE,
+                 data: btoa(bin) }
+      };
+      const text = JSON.stringify(doc);
+      document.getElementById('exportText').value = text;
+      document.getElementById('cfgWrap').style.display = 'none';
+      overlay.style.display = 'flex';
+      st.textContent = `field ${m.nx}x${m.ny}x${m.nz} at ${res} mm · `
+        + `${(text.length / 1024 / 1024).toFixed(2)} MB · paste into MetaMeld`;
+    } catch (e) { showErr('field export: ' + e.message); st.textContent = ''; }
+  }, 30);
+};
+
 document.getElementById('closeBtn').onclick = () => overlay.style.display = 'none';
 document.getElementById('copyBtn').onclick = () => {
   const ta = document.getElementById('exportText');
