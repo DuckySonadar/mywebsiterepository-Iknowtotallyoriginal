@@ -176,6 +176,12 @@
 <div id="panel">
   <div id="grip"><div></div></div>
   <div id="sheetBody">
+    <h3>Baked <span style="color:var(--dim);text-transform:none;letter-spacing:0"
+        id="bakedCount"></span></h3>
+    <div id="baked"></div>
+    <div class="bar" style="margin-top:6px">
+      <button class="btn sm" id="bakeBtn">Bake this body</button>
+    </div>
     <h3>Bodies <span style="color:var(--dim);text-transform:none;letter-spacing:0"
         id="bodyCount"></span></h3>
     <div id="bodies"></div>
@@ -200,6 +206,10 @@
     <div class="bar">
       <button class="btn" id="stlBtn">Save STL</button>
       <button class="btn" id="jsonBtn">JSON</button>
+      <button class="btn" id="saveBtn">Save</button>
+      <button class="btn" id="openBtn">Open</button>
+      <input type="file" id="fileInp" accept=".json,application/json"
+             style="display:none">
       <button class="btn" id="startBtn">Starters</button>
     </div>
     <div class="row" id="resRow">
@@ -255,7 +265,8 @@ const MAXN = 32;                      // uniform slots: 3 vec4 per shape
 // refers to it. Samples are one byte each: 0..255 across +/-`range` mm, which
 // is ~0.06 mm at the 8 mm range the exporter uses -- far finer than the grid
 // spacing, so the quantisation is never the limit.
-let field = null;        // { nx, ny, nz, box:[hx,hy,hz], range, data, tex }
+const MAXFIELDS = 4;     // one 3D texture each; the shader declares this many
+let fields = [];         // [{ name, nx, ny, nz, box:[hx,hy,hz], range, data, tex }]
 
 function decodeField(f) {
   if (!f || !f.data) return null;
@@ -265,8 +276,8 @@ function decodeField(f) {
   const need = f.nx * f.ny * f.nz;
   if (data.length !== need)
     throw new Error(`field is ${data.length} bytes, expected ${need}`);
-  return { nx: f.nx, ny: f.ny, nz: f.nz, box: f.box.slice(),
-           range: f.range, data, tex: null };
+  return { name: String(f.name || 'Baked'), nx: f.nx, ny: f.ny, nz: f.nz,
+           box: f.box.slice(), range: f.range, data, tex: null };
 }
 // Chunked, because fromCharCode(...half a million bytes) overflows the call
 // stack. Cached, because the samples never change once loaded and this runs on
@@ -278,15 +289,14 @@ function encodeField(f) {
       s += String.fromCharCode.apply(null, f.data.subarray(i, i + 8192));
     f.b64 = btoa(s);
   }
-  return { nx: f.nx, ny: f.ny, nz: f.nz, box: f.box, range: f.range,
-           data: f.b64 };
+  return { name: f.name, nx: f.nx, ny: f.ny, nz: f.nz, box: f.box,
+           range: f.range, data: f.b64 };
 }
 
 // Trilinear sample in the field's own local frame. Outside the grid this
 // returns the nearest edge sample, and `pField` unions that with the box so
 // the result stays a safe under-estimate for the marcher.
-function sampleField(x, y, z) {
-  const f = field;
+function sampleField(f, x, y, z) {
   if (!f) return 1e9;
   const gx = (x + f.box[0]) / (2 * f.box[0]) * (f.nx - 1);
   const gy = (y + f.box[1]) / (2 * f.box[1]) * (f.ny - 1);
@@ -449,27 +459,30 @@ const PRIMS = {
     // the sampler clamps to the edge, which would read as solid forever, so
     // the box distance is maxed in: outside, the box wins and the marcher
     // still converges; inside, the sampled field does.
-    name: 'Field', fn: 'pField', round: false, baked: true,
+    name: 'Baked', fn: 'pFieldS', round: false, baked: true,
     dims: [],
     def: [0, 0, 0],
-    glsl: `float pField(vec3 p, vec3 d, float r){
+    // GLSL ES 3.0 allows a sampler as a function parameter, so one function
+    // serves every slot and the generated call names its slot literally.
+    glsl: `float pFieldS(sampler3D s, vec3 p, vec3 d, float r){
   vec3 q = abs(p) - d;
   float box = length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
   if (d.x <= 0.0) return 1e9;
   // the grid is stored with z fastest, so the texture is nz wide by ny by nx
   // and the lookup is (z, y, x), not (x, y, z)
   vec3 uvw = (p + d)/(2.0*d);
-  float v = (texture(uField, clamp(uvw.zyx, 0.0, 1.0)).r*2.0 - 1.0)*r;
+  float v = (texture(s, clamp(uvw.zyx, 0.0, 1.0)).r*2.0 - 1.0)*r;
   return max(v, box);
 }`,
-    js: (p, d) => {
-      if (!field) return 1e9;
+    js: (p, d, r, n) => {
+      const f = fields[(n && n.fi) || 0];
+      if (!f) return 1e9;
       const q = [Math.abs(p[0]) - d[0], Math.abs(p[1]) - d[1],
                  Math.abs(p[2]) - d[2]];
       const box = Math.hypot(Math.max(q[0], 0), Math.max(q[1], 0),
                              Math.max(q[2], 0))
                 + Math.min(Math.max(q[0], q[1], q[2]), 0);
-      return Math.max(sampleField(p[0], p[1], p[2]), box);
+      return Math.max(sampleField(f, p[0], p[1], p[2]), box);
     },
     ext: d => [d[0] || 1, d[1] || 1, d[2] || 1]
   }
@@ -516,7 +529,7 @@ function sceneSDF(plan, x, y, z) {
       let pz = n.mz ? Math.abs(z) : z;
       e[0] = n.r[0] * RAD; e[1] = n.r[1] * RAD; e[2] = n.r[2] * RAD;
       invRot(px - n.p[0], py - n.p[1], pz - n.p[2], e, q);
-      const di = PRIMS[n.t].js(q, n.d, n.round || 0);
+      const di = PRIMS[n.t].js(q, n.d, n.round || 0, n);
       if (n.op === 'add') d = smin(d, di, n.k);
       else if (n.op === 'cut') d = smax(d, -di, n.k);
       else d = smax(d, di, n.k);
@@ -677,7 +690,7 @@ function makeNode(type, over) {
     t: type, on: true, op: 'add', k: 0,
     // b: which body an `add` builds. tg: which bodies a cut/keep reaches,
     // null meaning all of them (including bodies made after the cut).
-    b: 0, tg: null,
+    b: 0, tg: null, fi: 0,          // fi: which baked field, for t='field'
     p: [0, 0, type === 'plane' ? 0 : (P.ext(P.def.slice())[2] || 10)],
     r: [0, 0, 0], d: P.def.slice(), round: 0,
     mx: false, my: false, mz: false
@@ -726,6 +739,53 @@ function syncBodies() {
 }
 
 const bodyShapeCount = id => nodes.filter(n => n.op === 'add' && n.b === id).length;
+
+// ======================================================================
+// baking
+// ======================================================================
+// Freeze a body — however many shapes, however they were combined — into one
+// sampled field, and put it in the library. What comes back is a single shape
+// you can place, move, cut with and cut against like any primitive, and which
+// costs one texture lookup however complicated the thing it replaced was.
+let activeField = 0;
+
+function bakeBody(id, res) {
+  if (fields.length >= MAXFIELDS)
+    throw new Error(`the library holds ${MAXFIELDS}; delete one first`);
+  const own = nodes.filter(n => n.op === 'add' ? n.b === id : hits(n, id));
+  if (!own.some(n => n.op === 'add')) throw new Error('that body is empty');
+  const B = sceneBounds(own);
+  if (!B) throw new Error('nothing with a size to bake');
+  // a margin so the surface is never flush with the grid wall, where the
+  // clamped sampler would read a plateau instead of a gradient
+  const pad = Math.max(2 * res, 1.5);
+  const lo = [0, 1, 2].map(a => B.lo[a] - pad);
+  const hi = [0, 1, 2].map(a => B.hi[a] + pad);
+  const n = [0, 1, 2].map(a => Math.max(2, Math.ceil((hi[a] - lo[a]) / res) + 1));
+  const total = n[0] * n[1] * n[2];
+  if (total > 24e6) throw new Error(
+    `${(total / 1e6).toFixed(0)} M samples — coarsen it`);
+  const plan = [{ id, nodes: own.filter(x => x.on) }];
+  const data = new Uint8Array(total);
+  const range = 8.0;
+  let i = 0;
+  for (let a = 0; a < n[0]; a++) {
+    const x = lo[0] + a * res;
+    for (let b = 0; b < n[1]; b++) {
+      const y = lo[1] + b * res;
+      for (let c = 0; c < n[2]; c++) {
+        const t = Math.max(-1, Math.min(1,
+          sceneSDF(plan, x, y, lo[2] + c * res) / range));
+        data[i++] = Math.round((t + 1) / 2 * 255);
+      }
+    }
+  }
+  const box = [0, 1, 2].map(a => (hi[a] - lo[a]) / 2);
+  fields.push({ name: (bodyById(id) || {}).name || 'Baked',
+                nx: n[0], ny: n[1], nz: n[2], box, range, data, tex: null });
+  return { fi: fields.length - 1,
+           centre: [0, 1, 2].map(a => (lo[a] + hi[a]) / 2), box, range };
+}
 
 // ======================================================================
 // selection
@@ -938,7 +998,7 @@ function undo() {
 function save() {
   try { localStorage.setItem(STORE, JSON.stringify(
       { nodes, bodies, sel, activeBody,
-        field: field ? encodeField(field) : undefined })); }
+        fields: fields.length ? fields.map(encodeField) : undefined })); }
   catch (e) { /* private browsing: editing still works, it just won't persist */ }
 }
 
@@ -951,12 +1011,13 @@ function adopt(doc) {
   const kept = list.filter(n => n && PRIMS[n.t]).slice(0, MAXN)
                    .map(n => makeNode(n.t, n));
   if (!kept.length) return false;
-  // the baked field, if the document carries one. Decode before anything else
-  // is committed: a corrupt field should fail the load, not half-apply it.
-  let incoming = null;
-  if (doc.field) incoming = decodeField(doc.field);
-  if (field && field.tex) gl.deleteTexture(field.tex);
-  field = incoming;
+  // Baked fields, decoded before anything else is committed: a corrupt one
+  // should fail the load, not half-apply it. `field` (singular) is the shape
+  // the first exports used, still read so those documents keep working.
+  const raw = doc.fields || (doc.field ? [doc.field] : []);
+  const incoming = raw.slice(0, MAXFIELDS).map(decodeField).filter(Boolean);
+  for (const f of fields) if (f.tex) gl.deleteTexture(f.tex);
+  fields = incoming;
   nodes = kept;
   bodies = (doc.bodies || []).filter(b => b && typeof b.id === 'number')
              .map(b => ({ id: b.id, name: String(b.name || 'Body ' + (b.id + 1)),
@@ -969,6 +1030,9 @@ function adopt(doc) {
              : bodies.length ? bodies[0].id : 0;
   for (const n of nodes) {
     if (typeof n.b !== 'number') n.b = 0;
+    if (typeof n.fi !== 'number') n.fi = 0;
+    if (PRIMS[n.t].baked) n.fi = Math.min(Math.max(n.fi, 0),
+                                          Math.max(fields.length - 1, 0));
     if (n.op === 'add') n.tg = null;
     else if (n.tg && !Array.isArray(n.tg)) n.tg = null;
     if (Array.isArray(n.tg)) n.tg = n.tg.filter(id => typeof id === 'number');
@@ -1045,7 +1109,10 @@ uniform vec3 uSelTint;
 uniform vec2 uHit;
 // GLSL ES 3.0 has no default precision for sampler3D; it must be stated
 precision highp sampler3D;
-uniform sampler3D uField;
+uniform sampler3D uField0;
+uniform sampler3D uField1;
+uniform sampler3D uField2;
+uniform sampler3D uField3;
 
 // How much of the *accumulated* side survives a smin/smax. The colour has to
 // be mixed with the same weight the distance is, or the blue would sit off
@@ -1209,7 +1276,10 @@ function rebuildShader() {
       if (n.my) body += '  q.y = abs(q.y);\n';
       if (n.mz) body += '  q.z = abs(q.z);\n';
       body += `  q = invRot(q - uD[${b}].xyz, uD[${b + 1}].xyz);\n`;
-      body += `  di = ${PRIMS[n.t].fn}(q, uD[${b + 2}].xyz, uD[${b + 1}].w);\n`;
+      body += PRIMS[n.t].baked
+        ? `  di = pFieldS(uField${Math.min(n.fi || 0, MAXFIELDS - 1)}, q, `
+          + `uD[${b + 2}].xyz, uD[${b + 1}].w);\n`
+        : `  di = ${PRIMS[n.t].fn}(q, uD[${b + 2}].xyz, uD[${b + 1}].w);\n`;
       // weight first, then the distance: wmin/wmax need the pre-blend dB
       if (n.op === 'add') {
         body += `  w = wmin(dB, di, uD[${b}].w);\n`;
@@ -1234,7 +1304,7 @@ function rebuildShader() {
   prog = np;
   U = {};
   for (const k of ['uRes', 'uEye', 'uCam', 'uFocal', 'uTint', 'uSelTint', 'uHit',
-                 'uField'])
+                 'uField0', 'uField1', 'uField2', 'uField3'])
     U[k] = gl.getUniformLocation(prog, k);
   U.uD = gl.getUniformLocation(prog, 'uD[0]');
   errbar.style.display = 'none';
@@ -1254,24 +1324,26 @@ function bindField() {
     for (const k of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER])
       gl.texParameteri(gl.TEXTURE_3D, k, gl.LINEAR);
   }
-  if (field && !field.tex) {
-    field.tex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_3D, field.tex);
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    // the grid is stored x-major (x*ny + y)*nz + z, which is exactly the
-    // order texImage3D wants with width = nz, height = ny, depth = nx
-    gl.texStorage3D(gl.TEXTURE_3D, 1, gl.R8, field.nz, field.ny, field.nx);
-    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0,
-                     field.nz, field.ny, field.nx,
-                     gl.RED, gl.UNSIGNED_BYTE, field.data);
-    for (const k of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER])
-      gl.texParameteri(gl.TEXTURE_3D, k, gl.LINEAR);
-    for (const k of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R])
-      gl.texParameteri(gl.TEXTURE_3D, k, gl.CLAMP_TO_EDGE);
+  for (let i = 0; i < MAXFIELDS; i++) {
+    const f = fields[i];
+    if (f && !f.tex) {
+      f.tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_3D, f.tex);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      // the grid is stored x-major (x*ny + y)*nz + z, which is exactly the
+      // order texImage3D wants with width = nz, height = ny, depth = nx
+      gl.texStorage3D(gl.TEXTURE_3D, 1, gl.R8, f.nz, f.ny, f.nx);
+      gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, f.nz, f.ny, f.nx,
+                       gl.RED, gl.UNSIGNED_BYTE, f.data);
+      for (const k of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER])
+        gl.texParameteri(gl.TEXTURE_3D, k, gl.LINEAR);
+      for (const k of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R])
+        gl.texParameteri(gl.TEXTURE_3D, k, gl.CLAMP_TO_EDGE);
+    }
+    gl.activeTexture(gl.TEXTURE0 + i);
+    gl.bindTexture(gl.TEXTURE_3D, f ? f.tex : blankTex);
+    gl.uniform1i(U['uField' + i], i);
   }
-  gl.activeTexture(gl.TEXTURE0);
-  gl.bindTexture(gl.TEXTURE_3D, field ? field.tex : blankTex);
-  gl.uniform1i(U.uField, 0);
 }
 
 function packUniforms() {
@@ -1589,6 +1661,95 @@ $('selSeg').onclick = e => {
   renderList();
 };
 
+// ---------- baked library ----------
+function renderBaked() {
+  const box = $('baked');
+  box.innerHTML = '';
+  fields.forEach((f, i) => {
+    const used = nodes.filter(n => PRIMS[n.t].baked && n.fi === i).length;
+    const el = document.createElement('div');
+    el.className = 'node body' + (i === activeField ? ' sel' : '');
+    el.innerHTML =
+      `<span class="nm">${f.name}</span>` +
+      `<span class="bd">${f.nx}\u00d7${f.ny}\u00d7${f.nz}</span>` +
+      `<button class="ic" data-act="place" title="Place one">\uff0b</button>` +
+      `<button class="ic" data-act="rename">\u270e</button>` +
+      `<button class="ic" data-act="del" title="${used ? used + ' in use' : ''}">\u2715</button>`;
+    el.onclick = ev => {
+      const act = ev.target.dataset && ev.target.dataset.act;
+      if (act === 'place') {
+        if (nodes.length >= MAXN) { showErr('Shape limit is ' + MAXN); return; }
+        snapshot();
+        const c = makeNode('field', { fi: i, b: activeBody, p: [0, 0, f.box[2]],
+                                      d: f.box.slice(), round: f.range });
+        nodes.push(c);
+        sel = nodes.length - 1; picked = new Set([c]);
+      } else if (act === 'rename') {
+        renameField(f); return;
+      } else if (act === 'del') {
+        if (used) { showErr(`${used} shape(s) still use ${f.name}`); return; }
+        snapshot();
+        if (f.tex) gl.deleteTexture(f.tex);
+        fields.splice(i, 1);
+        // instances after it shift down with it
+        for (const n of nodes)
+          if (PRIMS[n.t].baked && n.fi > i) n.fi--;
+        activeField = Math.max(0, Math.min(activeField, fields.length - 1));
+      } else activeField = i;
+      rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+    };
+    box.appendChild(el);
+  });
+  $('bakedCount').textContent = fields.length
+    ? fields.length + '/' + MAXFIELDS : '';
+}
+
+function renameField(f) {
+  openModal('Rename baked shape',
+    `<input id="bnm" type="text" maxlength="24" value="${f.name.replace(/"/g, '&quot;')}">` +
+    '<div class="bar" style="margin-top:10px"><button class="btn" id="bok">Rename</button></div>',
+    () => {
+      const inp = $('bnm'); inp.focus(); inp.select();
+      const go = () => {
+        const v = inp.value.trim();
+        if (v) { snapshot(); f.name = v; f.b64 = null; }
+        closeModal(); renderList(); save();
+      };
+      $('bok').onclick = go;
+      inp.onkeydown = e => { if (e.key === 'Enter') go(); };
+    });
+}
+
+$('bakeBtn').onclick = () => {
+  const res = parseFloat(prompt(
+    'Grid spacing in mm for the bake.\n\nFiner is truer but the document '
+    + 'grows as the cube of it.', '0.8') || '0');
+  if (!(res > 0.05)) return;
+  try {
+    snapshot();
+    const id = activeBody;
+    const r = bakeBody(id, res);
+    // The body's shapes are replaced by the one baked shape. Its cuts were
+    // baked in too, so a cut that reached nothing but this body has done its
+    // work and goes; one that also reaches a body still standing has to stay,
+    // and will simply find nothing left to do here.
+    const live = new Set(bodies.map(x => x.id));
+    const spent = n => n.op === 'add'
+      ? n.b === id
+      : (n.tg ? n.tg.every(t => t === id)
+              : [...live].every(t => t === id));
+    const gone = new Set(nodes.filter(spent));
+    nodes = nodes.filter(n => !gone.has(n));
+    const c = makeNode('field', { fi: r.fi, b: id, p: r.centre,
+                                  d: r.box.slice(), round: r.range });
+    nodes.push(c);
+    sel = nodes.indexOf(c); picked = new Set([c]);
+    activeField = r.fi;
+    syncBodies(); syncPicked();
+    rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+  } catch (e) { undo(); showErr('bake: ' + e.message); }
+};
+
 // ---------- body list ----------
 // The whole point of a body is that it is a thing you work on, so it needs to
 // be visible without hunting through the shapes: what exists, which one you
@@ -1706,6 +1867,7 @@ function renderList() {
     : picked.size ? '1 selected'
     : 'Nothing selected · tap a shape, or a body above';
   renderBodies();
+  renderBaked();
   scheduleInfo();
 }
 
@@ -2019,7 +2181,8 @@ function updateInfo() {
 // ---------- add / duplicate / delete ----------
 $('addBtn').onclick = () => {
   openModal('Add a shape',
-    `<div class="picker">${PRIM_KEYS.filter(k => !PRIMS[k].baked || field).map(k =>
+    `<div class="picker">${PRIM_KEYS.filter(k => !PRIMS[k].baked || fields.length)
+      .map(k =>
       `<button data-prim="${k}">${PRIMS[k].name}</button>`).join('')}</div>`,
     card => {
       card.onclick = e => {
@@ -2030,9 +2193,10 @@ $('addBtn').onclick = () => {
         const fresh = makeNode(b.dataset.prim);
         // a field node carries no dimensions of its own: its box and its
         // quantisation range come from the document's baked grid
-        if (PRIMS[fresh.t].baked && field) {
-          fresh.d = field.box.slice();
-          fresh.round = field.range;
+        if (PRIMS[fresh.t].baked && fields.length) {
+          fresh.fi = Math.min(activeField, fields.length - 1);
+          fresh.d = fields[fresh.fi].box.slice();
+          fresh.round = fields[fresh.fi].range;
         }
         fresh.b = activeBody;      // build into the body you are standing in
         nodes.push(fresh);
@@ -2155,6 +2319,44 @@ $('startBtn').onclick = () => {
     });
 };
 
+// ---------- files ----------
+// The paste box is fine for a handful of primitives and hopeless once a baked
+// field is in the document -- half a megabyte of base64 is not something to
+// select by hand. These are the same document, through a file instead.
+function currentDoc() {
+  return { version: 2, bodies, nodes,
+           fields: fields.length ? fields.map(encodeField) : undefined };
+}
+$('saveBtn').onclick = () => {
+  const name = (prompt('Save as', 'metameld_model.json') || '').trim();
+  if (!name) return;
+  deliver(new Blob([JSON.stringify(currentDoc())], { type: 'application/json' }),
+          name.endsWith('.json') ? name : name + '.json');
+  setStatus('saved ' + name);
+};
+$('openBtn').onclick = () => $('fileInp').click();
+$('fileInp').onchange = e => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const d = JSON.parse(r.result);
+      const list = (d && (d.nodes || d)) || [];
+      if (!Array.isArray(list) || !list.some(n => n && PRIMS[n.t]))
+        throw new Error('no shapes in that file');
+      snapshot();
+      adopt(d);
+      sel = 0;
+      rebuildShader(); renderList(); renderInspector(); save(); frameModel();
+      setStatus('opened ' + file.name);
+    } catch (err) { showErr('open: ' + err.message); }
+  };
+  r.onerror = () => showErr('open: could not read that file');
+  r.readAsText(file);
+  e.target.value = '';        // so the same file can be opened twice
+};
+
 // ---------- JSON in / out ----------
 $('jsonBtn').onclick = () => {
   openModal('Model JSON',
@@ -2168,7 +2370,8 @@ $('jsonBtn').onclick = () => {
       const ta = $('jsonTa');
       ta.value = JSON.stringify(
         { version: 2, bodies, nodes,
-          field: field ? encodeField(field) : undefined }, null, 1);
+          fields: fields.length ? fields.map(encodeField) : undefined },
+        null, 1);
       $('jsCopy').onclick = () => {
         ta.select();
         if (navigator.clipboard) navigator.clipboard.writeText(ta.value).catch(() => {});
