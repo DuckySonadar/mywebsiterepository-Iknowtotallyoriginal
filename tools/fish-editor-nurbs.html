@@ -88,6 +88,10 @@
   </div>
   <button class="btn" id="exportBtn">Shape JSON</button>
   <button class="btn" id="fieldBtn">Field JSON</button>
+  <button class="btn" id="saveFishBtn">Save</button>
+  <button class="btn" id="openFishBtn">Open</button>
+  <input type="file" id="fishFile" accept=".json,application/json"
+         style="display:none">
   <button class="btn" id="stlBtn">Save STL</button>
   <button class="btn" id="camBtn">Recenter</button>
   <span id="status">building…</span>
@@ -1524,6 +1528,10 @@ function setSlider(group, key, v) {
   else spec.sliders[group][key] = v;
 }
 const panel = document.getElementById('panel');
+// Every control, so a loaded document can be read back into the panel. The
+// rows are built once with closures over their own elements; without this
+// list, opening a file would change the fish and leave the sliders lying.
+const sliderRows = [];
 SLIDERS.forEach(([title, rows]) => {
   const h = document.createElement('h3'); h.textContent = title; panel.appendChild(h);
   rows.forEach(([grp, key, label, mn, mx, st]) => {
@@ -1541,6 +1549,7 @@ SLIDERS.forEach(([title, rows]) => {
       sel.value = getSlider(grp, key);
       val.textContent = '';
       row.append(lab, sel); panel.appendChild(row);
+      sliderRows.push({ grp, key, el: sel });
       sel.addEventListener('change', () => {
         setSlider(grp, key, sel.value);
         if (mode !== '3d') { buildChips(); redraw2d(); }
@@ -1553,6 +1562,7 @@ SLIDERS.forEach(([title, rows]) => {
     inp.value = getSlider(grp, key);
     val.textContent = inp.value;
     row.append(lab, inp); panel.appendChild(row);
+    sliderRows.push({ grp, key, el: inp, out: val });
     inp.addEventListener('input', () => {
       setSlider(grp, key, +inp.value); val.textContent = inp.value;
       if (liveMode === 'live') requestBuild(true);
@@ -1573,6 +1583,7 @@ jrow.className = 'row';
 const jlab = document.createElement('label');
 jlab.textContent = 'Linkage';
 const jseg = document.createElement('div');
+const jbtns = [];
 jseg.className = 'seg';
 [['ball', 'Ball'], ['tool', 'Rings'], ['none', 'None']].forEach(([v, t]) => {
   const btn = document.createElement('button');
@@ -1585,6 +1596,7 @@ jseg.className = 'seg';
     if (mode !== '3d') { markDirty(); redraw2d(); }
   });
   jseg.appendChild(btn);
+  jbtns.push([v, btn]);
 });
 jrow.append(jlab, jseg); panel.appendChild(jrow);
 
@@ -2305,6 +2317,81 @@ document.getElementById('exportBtn').onclick = () => {
   if (has) document.getElementById('cfgText').value = JSON.stringify(cfg, null, 1);
   overlay.style.display = 'flex';
 };
+// ---------- files -----------------------------------------------------
+// The fish is two documents: the shape (curves, regions, sliders, mouth),
+// which is what flexifish_nurbs.py --shape reads, and the face/eye parameters
+// it takes as --config. Saving writes both, so reopening restores the fish
+// you were looking at; opening also accepts a bare shape, which is what the
+// Shape JSON box and --dump-shape produce.
+// joint_style lives in FIXED rather than DEFAULTS, so a loop over DEFAULTS
+// alone silently drops the linkage choice. Compare against the same baseline
+// `face` is built from instead.
+const FACE_BASE = () => Object.assign({}, NC.DEFAULTS, { joint_style: 'ball' });
+function editorDoc() {
+  const base = FACE_BASE(), cfg = {};
+  for (const k in face) if (face[k] !== base[k]) cfg[k] = face[k];
+  return { version: 1, kind: 'flexifish-nurbs',
+           shape: exportShape(), config: cfg };
+}
+
+function syncPanel() {
+  for (const r of sliderRows) {
+    const v = getSlider(r.grp, r.key);
+    r.el.value = v;
+    if (r.out) r.out.textContent = v;
+  }
+  for (const [v, btn] of jbtns)
+    btn.classList.toggle('on', v === face.joint_style);
+}
+
+function loadDoc(d) {
+  // a bare shape has curves at the top level; the saved form nests it
+  const shape = d && d.shape ? d.shape : d;
+  if (!shape || typeof shape !== 'object' || !shape.curves)
+    throw new Error('no fish shape in that file');
+  const merged = NC.deepMerge(NC.DEFAULT_SHAPE, shape);
+  spec.curves = merged.curves;
+  spec.regions = merged.regions;
+  spec.sliders = merged.sliders;
+  spec.mouth = merged.mouth;
+  const cfg = (d && d.config) || {};
+  Object.assign(face, FACE_BASE(), cfg);
+  syncPanel();
+  markDirty();
+  // VIEW_CURVES has no '3d' key, so the chips only exist in a draw view
+  if (mode !== '3d') { buildChips(); redraw2d(); }
+  requestBuild(false);
+}
+
+document.getElementById('saveFishBtn').onclick = () => {
+  const name = (prompt('Save as', 'fish.json') || '').trim();
+  if (!name) return;
+  const blob = new Blob([JSON.stringify(editorDoc(), null, 1)],
+                        { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name.endsWith('.json') ? name : name + '.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  document.getElementById('status').textContent = 'saved ' + a.download;
+};
+document.getElementById('openFishBtn').onclick = () =>
+  document.getElementById('fishFile').click();
+document.getElementById('fishFile').onchange = e => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      loadDoc(JSON.parse(r.result));
+      document.getElementById('status').textContent = 'opened ' + file.name;
+    } catch (err) { showErr('open: ' + err.message); }
+  };
+  r.onerror = () => showErr('open: could not read that file');
+  r.readAsText(file);
+  e.target.value = '';          // so the same file can be opened twice
+};
+
 // ---- MetaMeld field export -------------------------------------------
 // The fish is swept from curves, so no arrangement of MetaMeld's primitives
 // is it. Its distance field is, though, and that is all a cutter needs to be
