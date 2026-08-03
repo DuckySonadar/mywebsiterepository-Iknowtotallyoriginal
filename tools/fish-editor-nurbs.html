@@ -733,6 +733,12 @@ function layout(p, S) {
   const out = { cuts: [], errors: [], notes: [], dorsalOnHead: false,
                 trimLo: 0, trimHi: 0 };
   const last = S.b3 - p.tail_root_len;
+  if (p.joint_style === 'none') {
+    // one solid fish: the regions still shape the body, they just stop
+    // deciding where it is cut, and the dorsal fin needs no trimming
+    out.trimLo = -1e4; out.trimHi = 1e4;
+    return out;
+  }
   let nt = S.tailSegments;
   if (nt < 1) { out.errors.push('tail_segments must be >= 1'); return out; }
   if (last - S.b2 < nt * p.min_seg_len) {
@@ -1180,8 +1186,10 @@ function fishSDF(x, y, z, C) {
 function plateSDF(x, y, z, C) {
   // the real printable plate: segmented body with joint pins, cavities
   // and fin sockets, plus the free-floating fin parts
-  const split = C.p.joint_style === 'tool' ? plateToolAt : plateAt;
-  const out = split(x, y, z, C, bodySDF(x, y, z, C));
+  const split = C.p.joint_style === 'none' ? null
+              : C.p.joint_style === 'tool' ? plateToolAt : plateAt;
+  const body = bodySDF(x, y, z, C);
+  const out = split ? split(x, y, z, C, body) : body;
   return Math.min(out, finPartsSDF(x, y, z, C));
 }
 
@@ -1205,7 +1213,8 @@ function buildMesh(shape, overrides, res, showCuts, field) {
   // this loop inlines the body build for speed and so calls the segmenter
   // itself; plateSDF is the same choice made for one-off queries, and the two
   // have to agree or the preview and the export are different fish
-  const split = p.joint_style === 'tool' ? plateToolAt : plateAt;
+  const split = p.joint_style === 'none' ? null
+              : p.joint_style === 'tool' ? plateToolAt : plateAt;
   const caudCache = C.caud ? new Float64Array(nz) : null;
   const dorsCache = C.dors ? new Float64Array(nz) : null;
   let idx = 0;
@@ -1281,7 +1290,7 @@ function buildMesh(shape, overrides, res, showCuts, field) {
         }
         // the body is complete: segment it (plate) or groove it (view),
         // then drop in the separate fin parts, which neither touches
-        if (field === 'plate') d = split(x, y, z, C, d);
+        if (field === 'plate' && split) d = split(x, y, z, C, d);
         else if (C.showCuts && C.cuts.length) d = cutGrooves(d, x, C);
         for (let f = 0; f < C.fins.length; f++) {
           const pr = pres[f];
@@ -1312,6 +1321,11 @@ function regionSummary(C) {
   if (!C.bounds) return '';
   const S = C.S, p = C.p;
   const last = S.b3 - p.tail_root_len;
+  if (p.joint_style === 'none')
+    return 'one solid fish, no joints \u00b7 head 0\u2013' + S.b1.toFixed(0)
+      + ' \u00b7 dorsal ' + S.b1.toFixed(0) + '\u2013' + S.b2.toFixed(0)
+      + ' \u00b7 tail ' + S.b2.toFixed(0) + '\u2013' + last.toFixed(0)
+      + ' \u00b7 caudal ' + last.toFixed(0) + '\u2192';
   // count the cuts the layout actually made, not the slider: a ring linkage
   // caps them, and a summary that still quoted the slider would be a lie
   // 0.01, not an epsilon: the cuts are rounded to 1e-4, so the one sitting on
@@ -1560,7 +1574,7 @@ const jlab = document.createElement('label');
 jlab.textContent = 'Linkage';
 const jseg = document.createElement('div');
 jseg.className = 'seg';
-[['ball', 'Ball'], ['tool', 'Rings']].forEach(([v, t]) => {
+[['ball', 'Ball'], ['tool', 'Rings'], ['none', 'None']].forEach(([v, t]) => {
   const btn = document.createElement('button');
   btn.textContent = t;
   btn.className = v === face.joint_style ? 'on' : '';
