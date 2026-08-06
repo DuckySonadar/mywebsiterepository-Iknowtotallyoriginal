@@ -208,6 +208,7 @@
       <button class="btn" id="jsonBtn">JSON</button>
       <button class="btn" id="saveBtn">Save</button>
       <button class="btn" id="openBtn">Open</button>
+      <button class="btn" id="importBtn">Import</button>
       <input type="file" id="fileInp" accept=".json,application/json"
              style="display:none">
       <button class="btn" id="startBtn">Starters</button>
@@ -796,6 +797,17 @@ function bakeBody(id, res) {
 let picked = new Set();
 let selMode = 'single';        // single | sticky | body
 
+// The Scale row has no absolute to show, so it carries a running factor and
+// applies the ratio between readings. It has to go back to 1 when the
+// selection changes, or the next drag would scale by the leftover ratio --
+// so the factor is keyed to which shapes are picked.
+let scaleShown = 1, scaleSig = null;
+function scaleFactor() {
+  const sig = [...picked].map(n => nodes.indexOf(n)).sort().join(',');
+  if (sig !== scaleSig) { scaleSig = sig; scaleShown = 1; }
+  return scaleShown;
+}
+
 // the member the inspector edits; keeps `sel` honest if it drifted out
 function primaryNode() {
   const n = nodes[sel];
@@ -903,6 +915,28 @@ function translateSelection(dx, dy, dz) {
     }
   for (const n of picked)
     for (let i = 0; i < 3; i++) n.p[i] += d[i];
+}
+
+// Uniform only. Per-axis scaling of a rotated assembly is not expressible in
+// this representation -- a box turned 30 degrees and squashed in x is no
+// longer a box -- so offering it would quietly lie about what it did.
+// Everything with a length scales: the shapes' own dimensions, their offset
+// from the centre, and the blend and corner radii, which are lengths too and
+// would otherwise grow in proportion as the model shrank.
+function scaleSelection(f) {
+  if (!picked.size || !(f > 0) || f === 1) return;
+  const C = selCentre();
+  for (const n of picked) {
+    for (let i = 0; i < 3; i++)
+      n.p[i] = Math.min(Math.max(C[i] + (n.p[i] - C[i]) * f, -POSLIM), POSLIM);
+    const P = PRIMS[n.t];
+    // a plane has no size; a baked field's box is the grid it samples, and
+    // scaling that would resample it wrong, so both are left alone
+    if (!P.infinite && !P.baked)
+      for (let i = 0; i < n.d.length; i++) n.d[i] *= f;
+    n.k *= f;
+    if (n.round) n.round *= f;
+  }
 }
 
 function rotateSelection(ax, deg) {
@@ -2068,6 +2102,15 @@ function renderInspector() {
       group ? v => { rotateSelection(i, v - n.r[i]); refreshInspectorValues(); }
             : v => n.r[i] = v,
       -180, 180, 1)));
+  // Scale has no absolute to read back -- there is no "size" of a mixed bag
+  // of shapes -- so the row carries a running factor and applies the ratio
+  // between readings. It resets to 1 whenever the selection changes.
+  add(sliderRow('Scale', '\u00d7', scaleFactor,
+    v => {
+      scaleSelection(v / scaleFactor());
+      scaleShown = v;
+      refreshInspectorValues();
+    }, 0.2, 4, 0.01));
 
   const mr = document.createElement('div');
   mr.className = 'row';
@@ -2334,10 +2377,63 @@ $('saveBtn').onclick = () => {
           name.endsWith('.json') ? name : name + '.json');
   setStatus('saved ' + name);
 };
+// Import merges instead of replacing, which is how two documents that were
+// authored apart -- a body from one file, a cutter from another -- end up in
+// the same scene. Bodies and baked fields are renumbered on the way in so
+// nothing collides with what is already here.
+function importDoc(d) {
+  const list = (d && (d.nodes || d)) || [];
+  if (!Array.isArray(list) || !list.some(n => n && PRIMS[n.t]))
+    throw new Error('no shapes in that file');
+  const incoming = list.filter(n => n && PRIMS[n.t]).map(n => makeNode(n.t, n));
+  if (nodes.length + incoming.length > MAXN)
+    throw new Error(`that would make ${nodes.length + incoming.length} shapes; `
+                    + `the limit is ${MAXN}`);
+  const rawF = d.fields || (d.field ? [d.field] : []);
+  const newF = rawF.map(decodeField).filter(Boolean);
+  if (fields.length + newF.length > MAXFIELDS)
+    throw new Error(`that would make ${fields.length + newF.length} baked `
+                    + `shapes; the limit is ${MAXFIELDS}`);
+  const fBase = fields.length;
+  fields = fields.concat(newF);
+
+  const idBase = bodies.reduce((m, b) => Math.max(m, b.id), -1) + 1;
+  const srcBodies = (d.bodies || []).filter(b => b && typeof b.id === 'number');
+  const remap = new Map();
+  for (const b of srcBodies) {
+    remap.set(b.id, idBase + remap.size);
+    bodies.push({ id: remap.get(b.id),
+                  name: String(b.name || 'Body'), on: b.on !== false });
+  }
+  const mapId = id => remap.has(id) ? remap.get(id)
+    : (remap.set(id, idBase + remap.size),
+       bodies.push({ id: remap.get(id), name: 'Body', on: true }),
+       remap.get(id));
+  for (const n of incoming) {
+    if (typeof n.b !== 'number') n.b = 0;
+    n.b = mapId(n.b);
+    if (n.op === 'add') n.tg = null;
+    else if (Array.isArray(n.tg)) n.tg = n.tg.map(mapId);
+    if (PRIMS[n.t].baked) n.fi = fBase + Math.min(Math.max(n.fi || 0, 0),
+                                                  Math.max(newF.length - 1, 0));
+  }
+  nodes = nodes.concat(incoming);
+  syncBodies();
+  picked = new Set(incoming);          // what you just brought in, selected
+  sel = nodes.indexOf(incoming[0]);
+  if (incoming[0]) activeBody = incoming[0].b;
+}
+
 $('openBtn').onclick = () => $('fileInp').click();
+$('importBtn').onclick = () => { pendingImport = true; $('fileInp').click(); };
+let pendingImport = false;
 $('fileInp').onchange = e => {
   const file = e.target.files && e.target.files[0];
   if (!file) return;
+  // capture it now: the read is asynchronous, and clearing the flag when the
+  // handler returns would leave onload seeing false and replacing the document
+  const merge = pendingImport;
+  pendingImport = false;
   const r = new FileReader();
   r.onload = () => {
     try {
@@ -2354,10 +2450,9 @@ $('fileInp').onchange = e => {
           : 'no shapes in that file');
       }
       snapshot();
-      adopt(d);
-      sel = 0;
+      if (merge) { importDoc(d); setStatus('imported ' + file.name); }
+      else { adopt(d); sel = 0; setStatus('opened ' + file.name); }
       rebuildShader(); renderList(); renderInspector(); save(); frameModel();
-      setStatus('opened ' + file.name);
     } catch (err) { showErr('open: ' + err.message); }
   };
   r.onerror = () => showErr('open: could not read that file');
