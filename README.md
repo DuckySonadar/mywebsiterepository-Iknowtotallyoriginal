@@ -365,6 +365,17 @@ Region bands (head / dorsal / tail / caudal) and joint cut lines update
 live as you draw, the region sliders sit in the right panel, and a
 **Linkage: Ball / Rings** toggle picks the joint style.
 
+The side fins are one pair, drawn in **Draw top** under the dorsal fin.
+Each rides a ball socket, and a socket is a hollow rather than a bump —
+a joint cut through one prints it in halves and the fin falls out — so
+the whole socket has to sit inside a single rigid piece, and the dorsal
+segment is the piece the fish is built around. Drag the outline over a
+cut line and the designer says so before you build. (There was a
+pectoral pair on the head until recently. Its sockets pushed the first
+cut back until they fitted ahead of it, which cost a segment, and on
+the plate the two pairs competed for the same skirt of free space
+beside the body.)
+
 **Shape JSON** exports a file for `flexifish_nurbs.py --shape`. **Save STL**
 builds the real printable plate in the browser — segmented body, joint pins
 and cavities, ball-socket fin parts — at the same 0.3 mm resolution the
