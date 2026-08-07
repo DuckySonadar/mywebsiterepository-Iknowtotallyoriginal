@@ -365,6 +365,18 @@ Region bands (head / dorsal / tail / caudal) and joint cut lines update
 live as you draw, the region sliders sit in the right panel, and a
 **Linkage: Ball / Rings** toggle picks the joint style.
 
+**Linkage: Rings** subtracts a solid cutter to make each segment cut, and
+that solid places and sizes itself against the local body section. The
+**Ring cutter** sliders ride on top of that fit — *Along body* slides it,
+*Lift* raises it off the plate, *Scale* resizes it — and both draw views
+trace its **cross-section** where it currently sits, so you can watch it
+move rather than build the plate and look at the hole. The side view cuts
+it on the centreline, where the interlocking rings are; the top view cuts
+it at the height of those rings. The outline comes from marching squares
+on the same field the mesher uses, so it is the cut itself and not a
+picture of one. The joint's *cut* stays where the regions put it; these
+move only the solid that makes it.
+
 The side fins are one pair, drawn in **Draw top** under the dorsal fin.
 Each rides a ball socket, and a socket is a hollow rather than a bump —
 a joint cut through one prints it in halves and the fin falls out — so
