@@ -149,7 +149,9 @@ const FIXED = {
   tail_thick_root: 4.0, tail_thick_tip: 2.2,
   fin_edge: 0.9, fin_fillet: 2.8,
   joint_ball_max: 5.0, joint_capture: 0.20, joint_neck: 0.40,
-  joint_style: 'ball', joint_gap: 0.0
+  joint_style: 'ball', joint_gap: 0.0,
+  // where the ring cutter sits, on top of the fit it works out for itself
+  tool_offset: 0.0, tool_lift: 0.0, tool_scale: 1.0
 };
 
 const DEFAULT_SHAPE = {
@@ -627,6 +629,20 @@ const TOOL_NODES = [
   ['cut', 'plane', 2.00, [0, 0, 8], [0, 0, 0], [0, 0, 0]]
 ];
 const TOOL_DEG = Math.PI / 180;
+// Each node's rotation, as the sines and cosines the inverse needs, worked
+// out once. The nodes are a constant and their angles never change, but the
+// field is evaluated per voxel by the mesher and per grid point by the
+// cross-section tracer -- calling sin and cos six times inside that loop was
+// most of what either one spent. Same sequence of operations as before, so
+// the numbers are unchanged.
+const TOOL_ROT = TOOL_NODES.map(n => {
+  const out = [];
+  for (let ax = 2; ax >= 0; ax--) {
+    const a = -n[4][ax] * TOOL_DEG;
+    if (a) out.push(ax, Math.cos(a), Math.sin(a));
+  }
+  return out;
+});
 
 function toolSmin(a, b, k) {
   if (k <= 0) return Math.min(a, b);
@@ -635,15 +651,13 @@ function toolSmin(a, b, k) {
   return b + (a - b) * h - k * h * (1 - h);
 }
 
-function toolNodeSDF(n, X, Y, Z) {
-  const pos = n[3], rot = n[4], d = n[5];
+function toolNodeSDF(n, rots, X, Y, Z) {
+  const pos = n[3], d = n[5];
   let x = X - pos[0], y = Y - pos[1], z = Z - pos[2];
   // world -> local: the editor rotates a shape by Rz*Ry*Rx, so the inverse
   // undoes Z first, then Y, then X
-  for (let ax = 2; ax >= 0; ax--) {
-    const a = -rot[ax] * TOOL_DEG;
-    if (!a) continue;
-    const c = Math.cos(a), sn = Math.sin(a);
+  for (let i = 0; i < rots.length; i += 3) {
+    const ax = rots[i], c = rots[i + 1], sn = rots[i + 2];
     if (ax === 0) { const t = c * y - sn * z; z = sn * y + c * z; y = t; }
     else if (ax === 1) { const t = c * z - sn * x; x = sn * z + c * x; z = t; }
     else { const t = c * x - sn * y; y = sn * x + c * y; x = t; }
@@ -663,8 +677,9 @@ function toolNodeSDF(n, X, Y, Z) {
 
 function toolRaw(x, y, z) {
   let d = null;
-  for (const n of TOOL_NODES) {
-    const f = toolNodeSDF(n, x, y, z);
+  for (let i = 0; i < TOOL_NODES.length; i++) {
+    const n = TOOL_NODES[i];
+    const f = toolNodeSDF(n, TOOL_ROT[i], x, y, z);
     if (n[0] === 'add') d = d === null ? f : toolSmin(d, f, n[2]);
     else d = -toolSmin(-d, f, n[2]);      // smax(d, -f, k)
   }
@@ -672,10 +687,12 @@ function toolRaw(x, y, z) {
 }
 
 function toolSDF(x, y, z, j, gap) {
-  // the generator runs x nose->tail and the tool runs y, so the axes swap
+  // the generator runs x nose->tail and the tool runs y, so the axes swap.
+  // `xt` is where the solid sits and `xa` is where the cut is: they are the
+  // same until tool_offset moves one off the other.
   const tx = y / j.sWide;
-  const ty = (x - j.xa) / j.sLong + TOOL.ANCHOR;
-  const tz = z / j.sTall + TOOL.PLATE;
+  const ty = (x - j.xt) / j.sLong + TOOL.ANCHOR;
+  const tz = (z - j.lift) / j.sTall + TOOL.PLATE;
   const s = Math.min(j.sWide, Math.min(j.sLong, j.sTall));
   // times the smallest scale, so it stays an under-estimate of true distance
   let d = toolRaw(tx, ty, tz) * s;
@@ -691,8 +708,91 @@ function toolScales(x, S) {
            long: top / TOOL.H_REF, tall: top / TOOL.H_REF };
 }
 
-function toolSegmentCap(first, last, n, S, notes) {
-  const need = TOOL.MIN_SPACING * toolScales(first, S).long;
+// Marching squares on a 2D slice of an SDF, returning closed loops in the
+// slice's own coordinates. Used to trace the ring cutter for the draw views:
+// the solid that makes a segment cut is not a shape anyone drew, so short of
+// building the plate and looking at the hole there was no way to see where it
+// had landed. Tracing the same `toolSDF` the mesher uses means what is drawn
+// is the cut itself rather than a picture of it.
+function contourSDF(f, x0, x1, y0, y1, n) {
+  const m = Math.max(8, Math.round(n * Math.abs(y1 - y0) / Math.abs(x1 - x0)));
+  const dx = (x1 - x0) / n, dy = (y1 - y0) / m, w = m + 1;
+  const g = new Float32Array((n + 1) * w);
+  for (let i = 0; i <= n; i++)
+    for (let k = 0; k <= m; k++) {
+      const v = f(x0 + i * dx, y0 + k * dy);
+      // the border ring is forced outside, so a solid running past the box
+      // closes along the box edge instead of leaving an open chain that
+      // closePath then shortcuts across the middle of the shape
+      g[i * w + k] = (i === 0 || i === n || k === 0 || k === m)
+        ? Math.max(v, 1e-3) : v;
+    }
+  // edge pairs per case; corners are (i,k) (i+1,k) (i+1,k+1) (i,k+1) and the
+  // edges between them in the same order. 5 and 10 are the saddles: two
+  // separate crossings, drawn as two segments rather than guessed at.
+  const CASES = [[], [3, 0], [0, 1], [3, 1], [1, 2], [3, 0, 1, 2], [0, 2],
+                 [3, 2], [2, 3], [2, 0], [0, 1, 2, 3], [2, 1], [1, 3],
+                 [1, 0], [0, 3], []];
+  const segs = [];
+  const mix = (a, b, va, vb) => a + (b - a) * (va / (va - vb));
+  for (let i = 0; i < n; i++) {
+    const xa = x0 + i * dx, xb = xa + dx;
+    for (let k = 0; k < m; k++) {
+      const v0 = g[i * w + k], v1 = g[(i + 1) * w + k],
+            v2 = g[(i + 1) * w + k + 1], v3 = g[i * w + k + 1];
+      const c = (v0 < 0 ? 1 : 0) | (v1 < 0 ? 2 : 0) |
+                (v2 < 0 ? 4 : 0) | (v3 < 0 ? 8 : 0);
+      const cs = CASES[c];
+      if (!cs.length) continue;
+      const ya = y0 + k * dy, yb = ya + dy;
+      const pt = e => e === 0 ? [mix(xa, xb, v0, v1), ya]
+                    : e === 1 ? [xb, mix(ya, yb, v1, v2)]
+                    : e === 2 ? [mix(xa, xb, v3, v2), yb]
+                              : [xa, mix(ya, yb, v0, v3)];
+      for (let q = 0; q < cs.length; q += 2) segs.push([pt(cs[q]), pt(cs[q + 1])]);
+    }
+  }
+  // chain the segments into loops: every endpoint is shared by exactly two
+  // segments, so following them from any start closes the loop it is on
+  const key = q => Math.round(q[0] / dx * 64) + ':' + Math.round(q[1] / dy * 64);
+  const ends = new Map();
+  segs.forEach((sg, i) => {
+    for (const q of sg) {
+      const k = key(q);
+      if (!ends.has(k)) ends.set(k, []);
+      ends.get(k).push(i);
+    }
+  });
+  const used = new Uint8Array(segs.length), loops = [];
+  for (let i = 0; i < segs.length; i++) {
+    if (used[i]) continue;
+    used[i] = 1;
+    const loop = [segs[i][0], segs[i][1]];
+    for (let guard = 0; guard < segs.length; guard++) {
+      const at = ends.get(key(loop[loop.length - 1])) || [];
+      const nx = at.find(t => !used[t]);
+      if (nx === undefined) break;
+      used[nx] = 1;
+      const sg = segs[nx];
+      loop.push(key(sg[0]) === key(loop[loop.length - 1]) ? sg[1] : sg[0]);
+    }
+    if (loop.length < 3) continue;
+    // a section plane that grazes a surface tangentially -- the side view
+    // does exactly that along the cup walls -- leaves a trail of one-cell
+    // islands where the field just dips under zero. They are real, and they
+    // are speckle; a cross-section is easier to read without them.
+    let xa = Infinity, xb = -Infinity, ya = Infinity, yb = -Infinity;
+    for (const q of loop) {
+      xa = Math.min(xa, q[0]); xb = Math.max(xb, q[0]);
+      ya = Math.min(ya, q[1]); yb = Math.max(yb, q[1]);
+    }
+    if (xb - xa > 1.5 || yb - ya > 1.5) loops.push(loop);
+  }
+  return loops;
+}
+
+function toolSegmentCap(p, first, last, n, S, notes) {
+  const need = TOOL.MIN_SPACING * p.tool_scale * toolScales(first, S).long;
   const m = Math.max(1, Math.min(n, Math.floor((last - first) / need)));
   if (m !== n)
     notes.push('ring joints: ' + n + ' segments would space them ' +
@@ -706,6 +806,7 @@ function toolJointNotes(p, cuts, S) {
   const notes = [], errors = [], info = [];
   for (let i = 0; i < cuts.length; i++) {
     const sc = toolScales(cuts[i], S);
+    for (const k in sc) sc[k] *= p.tool_scale;
     const sm = Math.min(sc.wide, Math.min(sc.long, sc.tall));
     const ahead = TOOL.AHEAD * sc.long, behind = TOOL.BEHIND * sc.long;
     const gap = p.joint_gap > 0 ? p.joint_gap : TOOL.THICK * sm;
@@ -724,7 +825,15 @@ function toolJointNotes(p, cuts, S) {
     if (gap < 0.3)
       notes.push('joint x=' + cuts[i].toFixed(0) + ': only ' + gap.toFixed(2) +
         ' mm of clearance — the section is small, so the joint is too');
-    info.push({ xa: cuts[i], sWide: sc.wide, sLong: sc.long, sTall: sc.tall,
+    // the tool's own plate is its bottom: nothing below it is ever removed,
+    // so a lifted cutter leaves a continuous bridge of body under every joint
+    if (!i && p.tool_lift > 0.05)
+      notes.push('Lift ' + p.tool_lift.toFixed(1) + ' mm holds the cutter off ' +
+        'the build plate, so that much body is left under every joint and the ' +
+        'segments print as one piece');
+    info.push({ xa: cuts[i], xt: cuts[i] + p.tool_offset,
+                lift: p.tool_lift,
+                sWide: sc.wide, sLong: sc.long, sTall: sc.tall,
                 gap: gap, ahead: ahead, behind: behind });
   }
   return { notes: notes, errors: errors, info: info };
@@ -762,7 +871,7 @@ function layout(p, S) {
   // a ring joint is long; the tail region may not hold as many of them as it
   // holds ball joints (the dorsal region's own pair is checked afterwards)
   if (p.joint_style === 'tool')
-    nt = toolSegmentCap(S.b2, last, nt, S, out.notes);
+    nt = toolSegmentCap(p, S.b2, last, nt, S, out.notes);
   if (out.dorsalOnHead) {
     out.cuts = lin(S.b2, last, nt + 1);
     out.trimLo = 2.0; out.trimHi = S.b2 - p.face_gap / 2 - 1.0;
@@ -789,7 +898,7 @@ function layout(p, S) {
 // about 26 mm of body at full size -- most of it on one side.
 function jointSpans(p, C) {
   if (p.joint_style === 'tool')
-    return (C.joints || []).map(j => [j.xa - j.ahead, j.xa + j.behind]);
+    return (C.joints || []).map(j => [j.xt - j.ahead, j.xt + j.behind]);
   return C.cuts.map(c => [c - p.face_gap / 2, c + p.face_gap / 2]);
 }
 
@@ -959,7 +1068,7 @@ function plateToolAt(x, y, z, C, bodyF) {
     // the tool's own extent is 11 ahead of its anchor and 35.75 behind;
     // outside that the subtraction cannot change anything, so skipping is
     // exact rather than an approximation
-    if (x < j.xa - 11.5 * j.sLong || x > j.xa + 36.5 * j.sLong) continue;
+    if (x < j.xt - 11.5 * j.sLong || x > j.xt + 36.5 * j.sLong) continue;
     F = Math.max(F, -toolSDF(x, y, z, j, p.joint_gap));
   }
   return F;
@@ -1491,7 +1600,7 @@ const NurbsCore = { DEFAULTS, FIXED, DEFAULT_SHAPE, NS, clone, deepMerge,
                     // exported so the ring-joint solid can be held against
                     // joint_tool.py's, which is the only way to know the port
                     // is faithful -- see experiments/ring_joints
-                    TOOL, toolRaw, toolSDF, toolScales };
+                    TOOL, toolRaw, toolSDF, toolScales, contourSDF };
 if (typeof module !== 'undefined' && module.exports) module.exports = NurbsCore;
 root.NurbsCore = NurbsCore;
 })(typeof self !== 'undefined' ? self : globalThis);
@@ -1522,8 +1631,13 @@ const spec = {                       // the shape being drawn
   sliders: NC.clone(NC.DEFAULT_SHAPE.sliders),
   mouth: NC.clone(NC.DEFAULT_SHAPE.mouth)
 };
-const face = Object.assign({}, NC.DEFAULTS,    // eye/lip FishParams
-                          { joint_style: 'ball' });
+// Everything the panel can change that is a FishParams rather than a drawn
+// curve. NC.FIXED holds the defaults for the rest; these are the ones with a
+// control, so they need a value here even when it is the default one -- a
+// slider bound to `undefined` shows blank and writes NaN.
+const FACE_BASE = () => Object.assign({}, NC.DEFAULTS,
+  { joint_style: 'ball', tool_offset: 0, tool_lift: 0, tool_scale: 1 });
+const face = FACE_BASE();
 
 // ---------- sliders panel ----------
 const SLIDERS = [
@@ -1579,49 +1693,55 @@ const panel = document.getElementById('panel');
 // rows are built once with closures over their own elements; without this
 // list, opening a file would change the fish and leave the sliders lying.
 const sliderRows = [];
-SLIDERS.forEach(([title, rows]) => {
-  const h = document.createElement('h3'); h.textContent = title; panel.appendChild(h);
-  rows.forEach(([grp, key, label, mn, mx, st]) => {
-    const row = document.createElement('div'); row.className = 'row';
-    const lab = document.createElement('label');
-    lab.innerHTML = label + ' <b></b>';
-    const val = lab.querySelector('b');
-    if (grp === 'mouthsel') {                 // dropdown row
-      const sel = document.createElement('select');
-      for (const opt of mn) {                 // mn carries the options
-        const o = document.createElement('option');
-        o.value = o.textContent = opt;
-        sel.appendChild(o);
-      }
-      sel.value = getSlider(grp, key);
-      val.textContent = '';
-      row.append(lab, sel); panel.appendChild(row);
-      sliderRows.push({ grp, key, el: sel });
-      sel.addEventListener('change', () => {
-        setSlider(grp, key, sel.value);
-        if (mode !== '3d') { buildChips(); redraw2d(); }
-        requestBuild(false);
-      });
-      return;
+function addRow(spec) {
+  const [grp, key, label, mn, mx, st] = spec;
+  const row = document.createElement('div'); row.className = 'row';
+  const lab = document.createElement('label');
+  lab.innerHTML = label + ' <b></b>';
+  const val = lab.querySelector('b');
+  if (grp === 'mouthsel') {                 // dropdown row
+    const sel = document.createElement('select');
+    for (const opt of mn) {                 // mn carries the options
+      const o = document.createElement('option');
+      o.value = o.textContent = opt;
+      sel.appendChild(o);
     }
-    const inp = document.createElement('input');
-    inp.type = 'range'; inp.min = mn; inp.max = mx; inp.step = st;
-    inp.value = getSlider(grp, key);
-    val.textContent = inp.value;
-    row.append(lab, inp); panel.appendChild(row);
-    sliderRows.push({ grp, key, el: inp, out: val });
-    inp.addEventListener('input', () => {
-      setSlider(grp, key, +inp.value); val.textContent = inp.value;
-      if (liveMode === 'live') requestBuild(true);
-      if (mode !== '3d') { markDirty(); redraw2d(); }
-    });
-    inp.addEventListener('change', () => {
-      setSlider(grp, key, +inp.value); val.textContent = inp.value;
+    sel.value = getSlider(grp, key);
+    val.textContent = '';
+    row.append(lab, sel); panel.appendChild(row);
+    sliderRows.push({ grp, key, el: sel });
+    sel.addEventListener('change', () => {
+      setSlider(grp, key, sel.value);
+      if (mode !== '3d') { buildChips(); redraw2d(); }
       requestBuild(false);
-      if (mode !== '3d') { markDirty(); redraw2d(); }
     });
+    return row;
+  }
+  const inp = document.createElement('input');
+  inp.type = 'range'; inp.min = mn; inp.max = mx; inp.step = st;
+  inp.value = getSlider(grp, key);
+  val.textContent = inp.value;
+  row.append(lab, inp); panel.appendChild(row);
+  sliderRows.push({ grp, key, el: inp, out: val });
+  inp.addEventListener('input', () => {
+    setSlider(grp, key, +inp.value); val.textContent = inp.value;
+    if (liveMode === 'live') requestBuild(true);
+    if (mode !== '3d') { markDirty(); redraw2d(); }
   });
-});
+  inp.addEventListener('change', () => {
+    setSlider(grp, key, +inp.value); val.textContent = inp.value;
+    requestBuild(false);
+    if (mode !== '3d') { markDirty(); redraw2d(); }
+  });
+  return row;
+}
+function addGroup(title, rows) {
+  const h = document.createElement('h3');
+  h.textContent = title; panel.appendChild(h);
+  return [h].concat(rows.map(addRow));
+}
+SLIDERS.forEach(([title, rows]) => addGroup(title, rows));
+
 // linkage: ball-and-socket, or the subtracted interlocking rings. It is not
 // drawn in the 3D preview either way, but it decides how many segments fit
 // and it is what Save STL exports.
@@ -1639,6 +1759,7 @@ jseg.className = 'seg';
   btn.addEventListener('click', () => {
     face.joint_style = v;
     [...jseg.children].forEach(c => c.classList.toggle('on', c === btn));
+    syncCutterRows();
     requestBuild(false);
     if (mode !== '3d') { markDirty(); redraw2d(); }
   });
@@ -1646,6 +1767,28 @@ jseg.className = 'seg';
   jbtns.push([v, btn]);
 });
 jrow.append(jlab, jseg); panel.appendChild(jrow);
+
+// Placing the ring cutter by hand. It sizes and places itself against the
+// local section, which is the point of it -- these ride on top of that fit,
+// for when the automatic answer lands somewhere you would rather it did not.
+// The draw views show the cross-section they move, so this is a thing you
+// watch rather than guess at. Only the ring linkage has a solid to place, so
+// the group is only up when that linkage is.
+const cutterRows = addGroup('Ring cutter', [
+  ['face', 'tool_offset', 'Along body mm', -25, 25, .5],
+  ['face', 'tool_lift', 'Lift mm', -10, 20, .5],
+  ['face', 'tool_scale', 'Scale ×', .4, 1.8, .01]]);
+const cutterNote = document.createElement('p');
+cutterNote.style.cssText = 'color:#8fa0af;font-size:11.5px;margin:-4px 0 10px';
+cutterNote.textContent = 'The cut stays where the regions put it; these move ' +
+  'the solid that makes it. Draw side / Draw top show its cross-section.';
+panel.appendChild(cutterNote);
+cutterRows.push(cutterNote);
+function syncCutterRows() {
+  const on = face.joint_style === 'tool';
+  for (const el of cutterRows) el.style.display = on ? '' : 'none';
+}
+syncCutterRows();
 
 const foot = document.createElement('p');
 foot.style.cssText = 'color:#8fa0af;font-size:11.5px;margin-top:14px';
@@ -1803,6 +1946,39 @@ function prep2d() {
 }
 function markDirty() { prepDirty = true; }
 
+// ---------- the ring cutter, in cross-section ----------
+// The plane each view cuts the tool on: the centreline in side view, where the
+// interlocking rings live, and the height of those rings in top view -- a top
+// slice at the plate would show the shroud and none of the linkage, which is
+// the part worth seeing.
+//
+// Traced in world millimetres and cached against the resolve rather than the
+// camera: panning and zooming reuse the paths, and only an edit to the fish or
+// to the cutter's own sliders pays for them again.
+function cutterPaths(C) {
+  // coarser while a point is under the finger and sharper once it is let go:
+  // tracing three joints at full grid costs several times what resolving the
+  // fish does, and a drag redraws on every frame
+  const n = drag ? 56 : 110;
+  const at = mode + ':' + n;
+  if (!C._cut) C._cut = {};
+  if (C._cut[at]) return C._cut[at];
+  const out = [];
+  if (C.p && C.p.joint_style === 'tool' && C.joints) {
+    for (const j of C.joints) {
+      const x0 = j.xt - 13 * j.sLong, x1 = j.xt + 38 * j.sLong;
+      const f = mode === 'side'
+        ? (x, z) => NC.toolSDF(x, 0, z, j, C.p.joint_gap)
+        : (x, y) => NC.toolSDF(x, y, j.lift + 7.5 * j.sTall, j, C.p.joint_gap);
+      const v0 = mode === 'side' ? j.lift - 1.5 : -30 * j.sWide;
+      const v1 = mode === 'side' ? j.lift + 44 * j.sTall : 30 * j.sWide;
+      out.push(...NC.contourSDF(f, x0, x1, v0, v1, n));
+    }
+  }
+  C._cut[at] = out;
+  return out;
+}
+
 function redraw2d() {
   if (mode === '3d') return;
   const r = editRect();
@@ -1857,6 +2033,26 @@ function redraw2d() {
     }
     ectx.setLineDash([]);
     document.getElementById('regline').textContent = NC.regionSummary(C);
+  }
+
+  // the ring cutter in cross-section: what the segment cut actually removes,
+  // where the sliders have put it. Filled even-odd, so the rings read as
+  // rings instead of as filled discs.
+  const cuts2d = cutterPaths(C);
+  if (cuts2d.length) {
+    const path = new Path2D();
+    for (const loop of cuts2d) {
+      loop.forEach((q, i) => {
+        const [sx, sy] = w2s(q[0], q[1]);
+        i ? path.lineTo(sx, sy) : path.moveTo(sx, sy);
+      });
+      path.closePath();
+    }
+    ectx.fillStyle = '#7fd8f0'; ectx.globalAlpha = 0.13;
+    ectx.fill(path, 'evenodd');
+    ectx.strokeStyle = '#7fd8f0'; ectx.globalAlpha = 0.75; ectx.lineWidth = 1.2;
+    ectx.stroke(path);
+    ectx.globalAlpha = 1;
   }
 
   // plate line / centerline
@@ -2373,7 +2569,6 @@ document.getElementById('exportBtn').onclick = () => {
 // joint_style lives in FIXED rather than DEFAULTS, so a loop over DEFAULTS
 // alone silently drops the linkage choice. Compare against the same baseline
 // `face` is built from instead.
-const FACE_BASE = () => Object.assign({}, NC.DEFAULTS, { joint_style: 'ball' });
 function editorDoc() {
   const base = FACE_BASE(), cfg = {};
   for (const k in face) if (face[k] !== base[k]) cfg[k] = face[k];
@@ -2382,6 +2577,7 @@ function editorDoc() {
 }
 
 function syncPanel() {
+  syncCutterRows();
   for (const r of sliderRows) {
     const v = getSlider(r.grp, r.key);
     r.el.value = v;
