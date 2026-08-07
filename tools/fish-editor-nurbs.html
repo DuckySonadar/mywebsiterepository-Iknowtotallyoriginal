@@ -87,7 +87,7 @@
     <button data-q="1.4">Draft</button><button data-q="1.0" class="on">Standard</button><button data-q="0.8">High</button>
   </div>
   <button class="btn" id="exportBtn">Shape JSON</button>
-  <button class="btn" id="fieldBtn">Field JSON</button>
+  <button class="btn" id="fieldBtn" title="Bake the fish to a field file MetaMeld can open">Field JSON</button>
   <button class="btn" id="saveFishBtn">Save</button>
   <button class="btn" id="openFishBtn">Open</button>
   <input type="file" id="fishFile" accept=".json,application/json"
@@ -145,8 +145,7 @@ const FIXED = {
   belly_drop: 3.5, tail_root_len: 12.0, fin_margin: 2.2,
   clearance: 0.55, wall: 1.6, face_gap: 1.0, min_seg_len: 6.0,
   swing_front_deg: 16.0, swing_rear_deg: 12.0,
-  pupil_diameter: 4.6, dorsal_thickness: 2.8,
-  pec_thickness: 3.6, pelvic_thickness: 3.4,
+  pupil_diameter: 4.6, dorsal_thickness: 2.8, pelvic_thickness: 3.4,
   tail_thick_root: 4.0, tail_thick_tip: 2.2,
   fin_edge: 0.9, fin_fillet: 2.8,
   joint_ball_max: 5.0, joint_capture: 0.20, joint_neck: 0.40,
@@ -169,12 +168,13 @@ const DEFAULT_SHAPE = {
                            [150, 33], [148, 26], [137, 19.5], [137, 18.5],
                            [148, 11], [149, 2], [138, -2], [120, -2],
                            [107, 0]] },
-    pectoral_fin: { closed: true,
-                    points: [[16, 13], [21, 16], [28, 22], [32, 26],
-                             [29, 28], [22, 26], [16, 20], [13, 15]] },
+    // drawn under the dorsal fin: a ball socket has to live inside one
+    // rigid segment, and the dorsal segment is the one this fish is built
+    // around (see layout())
     pelvic_fin: { closed: true,
-                  points: [[34, 12], [39, 14], [45, 18], [49, 22],
-                           [46, 24], [40, 23], [34, 17], [31, 13]] },
+                  points: [[55.5, 10.5], [60.5, 12.5], [66.5, 16.5],
+                           [70.5, 20.5], [67.5, 22.5], [61.5, 21.5],
+                           [55.5, 15.5], [52.5, 11.5]] },
     mouth: { points: [[1.0, 14.0], [0.6, 11.0], [2.0, 8.5], [5.5, 7.0]] }
   },
   regions: { tail_segments: 3, blend_mm: 8.0 },
@@ -184,7 +184,6 @@ const DEFAULT_SHAPE = {
     dorsal: { length: 1, width: 1, height: 1, fin_height: 1 },
     tail: { length: 1, width: 1, height: 1 },
     caudal: { length: 1, height: 1, thickness: 1 },
-    pectoral: { length: 1, width: 1 },
     pelvic: { length: 1, width: 1 }
   }
 };
@@ -364,8 +363,7 @@ function resolveShape(spec, p, withSliders) {
   // side fins: attachment BEFORE any remap so paddles translate rigidly
   const planM0 = monotone(plan);
   const sideSpecs = [];
-  for (const [name, thick] of [['pectoral_fin', p.pec_thickness],
-                               ['pelvic_fin', p.pelvic_thickness]]) {
+  for (const [name, thick] of [['pelvic_fin', p.pelvic_thickness]]) {
     if (!curves[name]) continue;
     const pts = sampleCurve(curves[name], NS.side);
     let best = -Infinity, bi = 0;
@@ -750,26 +748,22 @@ function layout(p, S) {
       Math.max(Math.floor((last - S.b2) / p.min_seg_len), 0) + ')');
     return out;
   }
-  let need = S.b0 + 12.0;
-  for (const g of S.sideFins) {
-    const rb = Math.min(Math.max(0.42 * g.chord, 3.0), 5.0);
-    need = Math.max(need, g.att[0] + rb + p.clearance + p.wall + 1.0);
-  }
   // m === 1 is np.linspace(a, b, 1) == [a]; without the guard a
   // single-segment layout divides by zero and every cut comes out NaN
   const lin = (a, b, m) => m <= 1 ? [a]
     : Array.from({ length: m }, (_, i) => a + (b - a) * i / (m - 1));
-  out.dorsalOnHead = S.b1 < need || S.b2 - S.b1 < p.min_seg_len;
+  // A head shorter than 12 mm has nowhere to put the eyes and the mouth, and
+  // a dorsal region too short to be a segment fuses into it. The side fins
+  // used to have a say here too -- drawn on the head, their sockets pushed
+  // the first cut back until they fitted ahead of it, which cost a segment.
+  // They ride the dorsal segment now, so the first cut is the dorsal fin's
+  // business alone.
+  out.dorsalOnHead = S.b1 < S.b0 + 12.0 || S.b2 - S.b1 < p.min_seg_len;
   // a ring joint is long; the tail region may not hold as many of them as it
   // holds ball joints (the dorsal region's own pair is checked afterwards)
   if (p.joint_style === 'tool')
     nt = toolSegmentCap(S.b2, last, nt, S, out.notes);
   if (out.dorsalOnHead) {
-    if (S.b2 < need) {
-      out.errors.push('pectoral/pelvic fins attach behind the first joint ' +
-        'cut (x=' + S.b2.toFixed(1) + '); draw them further forward');
-      return out;
-    }
     out.cuts = lin(S.b2, last, nt + 1);
     out.trimLo = 2.0; out.trimHi = S.b2 - p.face_gap / 2 - 1.0;
   } else {
@@ -786,6 +780,54 @@ function layout(p, S) {
     out.errors.push('segments as short as ' + minSeg.toFixed(1) +
       ' mm; fewer tail segments or a longer tail region');
   return out;
+}
+
+// How much of the body's SKIN each joint disturbs, as [x0, x1]. A ball joint
+// is a hollow on the centreline: out at the surface all it does is cut the
+// body in two, so its span is the cut plane and the gap either side. The ring
+// tool is a solid subtracted from the whole section, shroud and all, and eats
+// about 26 mm of body at full size -- most of it on one side.
+function jointSpans(p, C) {
+  if (p.joint_style === 'tool')
+    return (C.joints || []).map(j => [j.xa - j.ahead, j.xa + j.behind]);
+  return C.cuts.map(c => [c - p.face_gap / 2, c + p.face_gap / 2]);
+}
+
+// A side-fin socket has to sit inside ONE piece of the body. The socket is a
+// hollow, not a bump: a joint reaching into it leaves two half-sockets either
+// side of a joint that then moves, and the fin falls out. The pelvic pair is
+// drawn under the dorsal fin, which makes the dorsal segment its piece -- and
+// that is the shortest piece on the fish, so say it plainly here rather than
+// leave it to the shell count.
+function checkSideFins(S, p, C) {
+  const spans = jointSpans(p, C);
+  if (!spans.length) return;
+  const edges = [[-Infinity, -Infinity]].concat(spans, [[Infinity, Infinity]]);
+  for (const F of C.fins) {
+    const x = F.cx, r = F.boss + 1.0;
+    const hit = spans.filter(w => w[0] < x + r && w[1] > x - r);
+    if (!hit.length) continue;
+    const free = [];
+    for (let i = 1; i < edges.length; i++)
+      if (edges[i][0] - edges[i - 1][1] > 2 * r)
+        free.push([edges[i - 1][1], edges[i][0]]);
+    free.sort((a, b) => Math.min(Math.abs(a[0] - x), Math.abs(a[1] - x)) -
+                        Math.min(Math.abs(b[0] - x), Math.abs(b[1] - x)));
+    const show = w => w[0] === -Infinity ? 'ahead of x=' + (w[1] - r).toFixed(1)
+                    : w[1] === Infinity ? 'behind x=' + (w[0] + r).toFixed(1)
+                    : 'x=' + (w[0] + r).toFixed(1) + '..' + (w[1] - r).toFixed(1);
+    let where = free.length
+      ? '; it fits ' + free.slice(0, 2).map(show).join(' or ')
+      : '; no piece of this fish is long enough for it — lengthen the body, ' +
+        'or draw a narrower paddle (the socket is sized from the chord)';
+    if (p.joint_style === 'tool')
+      where += '. A ring joint takes far more body than a ball does, so ' +
+               'Linkage: Ball may be the easier fix than moving the fin';
+    C.errors.push('the ' + F.name + ' socket at x=' + x.toFixed(1) +
+      ' (radius ' + F.boss.toFixed(1) + ' mm) runs into the joint that takes ' +
+      'x=' + hit[0][0].toFixed(1) + '..' + hit[0][1].toFixed(1) + ', so it ' +
+      'would print in halves and the fin would fall out' + where);
+  }
 }
 
 // plate-cut ball joint sizing -- mirrors FishBuilder._size_joints
@@ -994,13 +1036,16 @@ function prepare(shape, overrides, showCuts) {
     const rb = Math.min(Math.max(0.42 * g.chord, 3.0), 5.0);
     const zc = Math.max(0.62 * rb, Math.sqrt(2 * rb * p.clearance) + 0.45);
     const cy = halfwidthAt(g.att[0], zc, S) - 0.2 * rb;
-    C.fins.push({ cx: g.att[0], cy, cz: zc, rb, rn: 0.45 * rb,
+    C.fins.push({ name: g.name, cx: g.att[0], cy, cz: zc, rb, rn: 0.45 * rb,
                   dx: g.dirx, dy: g.diry, th: g.thick,
                   attx: g.att[0], atty: g.att[1],
                   span: g.span, chord: g.chord,
                   boss: rb + p.clearance + p.wall,
                   poly: polyPre(g.poly) });
   }
+  // after the joints are sized, not before: how much body a joint disturbs
+  // is not known until it has been sized, and a ring joint reaches far
+  if (!C.errors.length) checkSideFins(S, p, C);
 
   // eyes / pupils (head region length anchors them, like the Python side)
   const headLen = (C.dorsalOnHead ? S.b2 : S.b1) - S.b0;
@@ -1098,7 +1143,12 @@ function finPartSDF(x, y, z, C, F, sgn, pre) {
   let pad = finSheet(pre.d2, z - zf, F.th / 2, 0.75 * F.th / 2,
                      pre.u, 0.0, Math.max(F.span, 1.0), 0.45, p.fin_fillet);
   pad = smax(pad, (F.boss + 0.7) - rball, 1.5);
-  return smin(smin(ball, neck, 1.5), pad, 2.0);
+  // 1.0, not the 1.5 this used to be: the fillet where the neck leaves the
+  // ball grows material outward, into the very clearance the joint needs to
+  // turn. At 1.5 the ball-to-socket gap measured 0.43 mm against a nominal
+  // 0.55 -- under two voxels at the 0.3 mm print resolution, so the mesher
+  // bridged it and the fin came out welded to the body. Mirrors the Python.
+  return smin(smin(ball, neck, 1.0), pad, 2.0);
 }
 
 function bodySDF(x, y, z, C) {
@@ -1502,9 +1552,6 @@ const SLIDERS = [
   ['caudal','length','Length ×',0.5,1.8,.01],
   ['caudal','height','Height ×',0.5,1.8,.01],
   ['caudal','thickness','Thickness ×',0.5,1.5,.01]]],
- ['Pectoral fins', [
-  ['pectoral','length','Length ×',0.5,1.8,.01],
-  ['pectoral','width','Width ×',0.5,1.8,.01]]],
  ['Pelvic fins', [
   ['pelvic','length','Length ×',0.5,1.8,.01],
   ['pelvic','width','Width ×',0.5,1.8,.01]]],
@@ -1641,14 +1688,14 @@ document.getElementById('qual').addEventListener('click', e => {
 // ======================================================================
 const VIEW_CURVES = {
   side: ['back', 'belly', 'dorsal_fin', 'caudal_fin', 'mouth'],
-  top: ['plan', 'pectoral_fin', 'pelvic_fin']
+  top: ['plan', 'pelvic_fin']
 };
 const CURVE_COLOR = {
   back: '#5ec8f0', belly: '#7fd8a0', plan: '#5ec8f0',
   dorsal_fin: '#f0913b', caudal_fin: '#e0709b',
-  pectoral_fin: '#f0913b', pelvic_fin: '#c9a2f2', mouth: '#e8d44d'
+  pelvic_fin: '#c9a2f2', mouth: '#e8d44d'
 };
-const OPTIONAL = { dorsal_fin: 1, caudal_fin: 1, pectoral_fin: 1, pelvic_fin: 1 };
+const OPTIONAL = { dorsal_fin: 1, caudal_fin: 1, pelvic_fin: 1 };
 function curveShown(name) {          // mouth curve only in curve mode
   return !!spec.curves[name] &&
          (name !== 'mouth' || spec.mouth.shape === 'curve');
@@ -2350,6 +2397,11 @@ function loadDoc(d) {
   if (!shape || typeof shape !== 'object' || !shape.curves)
     throw new Error('no fish shape in that file');
   const merged = NC.deepMerge(NC.DEFAULT_SHAPE, shape);
+  // a file saved before the pectoral pair was removed still carries its
+  // curve and sliders. Nothing reads them any more, and leaving them in
+  // would write them back out again on the next save, so drop them here.
+  delete merged.curves.pectoral_fin;
+  delete merged.sliders.pectoral;
   spec.curves = merged.curves;
   spec.regions = merged.regions;
   spec.sliders = merged.sliders;
@@ -2427,15 +2479,23 @@ document.getElementById('fieldBtn').onclick = () => {
                   p: [(B.x0 + B.x1) / 2, (B.y0 + B.y1) / 2, (B.z0 + B.z1) / 2],
                   r: [0, 0, 0], d: box, round: FIELD_RANGE,
                   mx: false, my: false, mz: false }],
-        field: { nx: m.nx, ny: m.ny, nz: m.nz, box, range: FIELD_RANGE,
-                 data: btoa(bin) }
+        // the library form, and named, so it reads as "Fish" there rather
+        // than as an anonymous baked blob
+        fields: [{ name: 'Fish', nx: m.nx, ny: m.ny, nz: m.nz, box,
+                   range: FIELD_RANGE, data: btoa(bin) }]
       };
       const text = JSON.stringify(doc);
-      document.getElementById('exportText').value = text;
-      document.getElementById('cfgWrap').style.display = 'none';
-      overlay.style.display = 'flex';
+      // a file, not a textarea: this is half a megabyte of base64 and nobody
+      // is selecting that by hand. MetaMeld's Open reads it directly.
+      const blob = new Blob([text], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'fish_field.json';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
       st.textContent = `field ${m.nx}x${m.ny}x${m.nz} at ${res} mm · `
-        + `${(text.length / 1024 / 1024).toFixed(2)} MB · paste into MetaMeld`;
+        + `${(text.length / 1024 / 1024).toFixed(2)} MB · `
+        + `saved fish_field.json — open it in MetaMeld`;
     } catch (e) { showErr('field export: ' + e.message); st.textContent = ''; }
   }, 30);
 };
