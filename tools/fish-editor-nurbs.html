@@ -84,7 +84,7 @@
     <button data-m="live" class="on">Live</button><button data-m="release">On release</button>
   </div>
   <div class="seg" id="qual">
-    <button data-q="1.4">Draft</button><button data-q="1.0" class="on">Standard</button><button data-q="0.8">High</button>
+    <button data-q="1.0">Draft</button><button data-q="0.7" class="on">Standard</button><button data-q="0.5">High</button>
   </div>
   <button class="btn" id="exportBtn">Shape JSON</button>
   <button class="btn" id="fieldBtn" title="Bake the fish to a field file MetaMeld can open">Field JSON</button>
@@ -1382,10 +1382,31 @@ function plateSDF(x, y, z, C) {
 }
 
 // ---------- volume + surface nets (silhouettes cached per grid line) ----
-function buildMesh(shape, overrides, res, showCuts, field) {
+// The viewport raymarches this field on the GPU rather than meshing it, and
+// a byte per sample is what keeps a 12-million-voxel grid inside a phone's
+// texture budget. +/-8 mm quantised to 256 levels is 0.031 mm a step: an
+// order under the 0.3 mm the thing prints at, and a safe under-estimate of
+// distance everywhere, which is what a sphere trace needs to not overshoot.
+const VIEW_RANGE = 8.0;
+
+// `want`: 'mesh' extracts the surface (Save STL needs triangles), 'volume'
+// stops at the grid and hands back the bytes (the viewport needs a texture).
+// `maxDim` caps the grid so it fits MAX_3D_TEXTURE_SIZE -- res is loosened
+// until it does, and the effective res comes back so the status line can be
+// honest about it.
+function buildMesh(shape, overrides, res, showCuts, field, want, maxDim) {
   const t0 = Date.now();
   const C = prepare(shape, overrides, showCuts);
-  if (field === 'plate' && C.errors.length) C.bounds = null;
+  // A plate that cannot be built has nothing to sample -- but blanking the
+  // viewport while someone is in the middle of fixing the thing that broke
+  // it is no help at all. The viewport (which asks for a volume) falls back
+  // to the unsegmented shape and says so; an export never does, because a
+  // file that quietly is not the plate is worse than no file.
+  let asPlate = field === 'plate';
+  if (asPlate && C.errors.length) {
+    if (want === 'volume') { field = 'view'; asPlate = false; }
+    else C.bounds = null;
+  }
   if (!C.bounds) {
     return { positions: new Float32Array(0), normals: new Float32Array(0),
              indices: new Uint32Array(0), errors: C.errors, notes: [],
@@ -1393,6 +1414,11 @@ function buildMesh(shape, overrides, res, showCuts, field) {
              ms: Date.now() - t0, voxels: 0, C };
   }
   const B = C.bounds;
+  if (maxDim) {
+    const need = Math.max((B.x1 - B.x0), (B.y1 - B.y0), (B.z1 - B.z0))
+               / (maxDim - 1);
+    if (need > res) res = need;
+  }
   const nx = Math.max(4, Math.ceil((B.x1 - B.x0) / res) + 1);
   const ny = Math.max(4, Math.ceil((B.y1 - B.y0) / res) + 1);
   const nz = Math.max(4, Math.ceil((B.z1 - B.z0) / res) + 1);
@@ -1491,17 +1517,31 @@ function buildMesh(shape, overrides, res, showCuts, field) {
       }
     }
   }
-  const mesh = surfaceNets(vol, nx, ny, nz, B.x0, B.y0, B.z0, res);
+  const mesh = want === 'volume'
+    ? { positions: new Float32Array(0), normals: new Float32Array(0),
+        indices: new Uint32Array(0) }
+    : surfaceNets(vol, nx, ny, nz, B.x0, B.y0, B.z0, res);
+  if (want === 'volume') {
+    const q = new Uint8Array(vol.length);
+    for (let i = 0; i < vol.length; i++) {
+      const t = vol[i] / VIEW_RANGE;
+      q[i] = Math.round((Math.max(-1, Math.min(1, t)) + 1) * 127.5);
+    }
+    mesh.vol8 = q;
+  }
   mesh.ms = Date.now() - t0;
   mesh.voxels = nx * ny * nz;
   mesh.cuts = C.cuts; mesh.notes = C.notes; mesh.errors = C.errors;
   mesh.joints = C.joints || [];
   mesh.size = [B.x1 - B.x0, B.y1 - B.y0, B.z1 - B.z0];
   mesh.bounds = B;
+  mesh.shapeOnly = want === 'volume' && !asPlate;
   mesh.regions = regionSummary(C);
   // the raw grid, for the MetaMeld field export: same samples the mesh came
   // from, so what you cut against there is what prints here
-  mesh.vol = vol; mesh.nx = nx; mesh.ny = ny; mesh.nz = nz; mesh.res = res;
+  if (want !== 'volume') mesh.vol = vol;    // the MetaMeld field export
+  mesh.nx = nx; mesh.ny = ny; mesh.nz = nz; mesh.res = res;
+  mesh.range = VIEW_RANGE;
   return mesh;
 }
 
@@ -1626,7 +1666,7 @@ const NurbsCore = { DEFAULTS, FIXED, DEFAULT_SHAPE, NS, clone, deepMerge,
                     // joint_tool.py's, which is the only way to know the port
                     // is faithful -- see experiments/ring_joints
                     TOOL, toolRaw, toolSDF, toolScales, toolPlace,
-                    contourSDF };
+                    contourSDF, VIEW_RANGE };
 if (typeof module !== 'undefined' && module.exports) module.exports = NurbsCore;
 root.NurbsCore = NurbsCore;
 })(typeof self !== 'undefined' ? self : globalThis);
@@ -1822,14 +1862,18 @@ syncCutterRows();
 const foot = document.createElement('p');
 foot.style.cssText = 'color:#8fa0af;font-size:11.5px;margin-top:14px';
 foot.textContent = 'Draw the fish in the Side/Top views; regions and joints ' +
-  'follow the curves. The 3D view welds the side fins and grooves the cut ' +
-  'lines for display only — Save STL exports the real printable plate ' +
-  '(joints, cavities, free ball-joint fins) at print resolution; run ' +
+  'follow the curves. The 3D view raymarches the real printable plate — ' +
+  'segmented body, joint pins and cavities, free ball-joint fins — so what ' +
+  'is on screen is what comes off the printer, at the grid spacing the ' +
+  'quality buttons pick. Save STL meshes that same field; run ' +
   'flexifish_nurbs.py on the exported shape for the final print file.';
 panel.appendChild(foot);
 
 // ---------- top bar modes ----------
-let mode = '3d', liveMode = 'live', finalRes = 1.0;
+// grid spacing for the viewport's field. Finer than the mesher's old tiers
+// because the surface is raymarched now: the grid is the picture, and not
+// extracting a surface from it paid for a third of the difference.
+let mode = '3d', liveMode = 'live', finalRes = 0.7;
 const viewCanvas = document.getElementById('view');
 const editCanvas = document.getElementById('edit');
 const drawbar = document.getElementById('drawbar');
@@ -2471,6 +2515,9 @@ gl.enableVertexAttribArray(0);
 gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
 const nGrid = gridVerts.length / 3;
 
+// the raymarch draws a full-screen triangle from gl_VertexID and reads no
+// attributes, but WebGL2 still wants some VAO bound
+const emptyVAO = gl.createVertexArray();
 const fishVAO = gl.createVertexArray();
 gl.bindVertexArray(fishVAO);
 const posBuf = gl.createBuffer(), nrmBuf = gl.createBuffer(),
@@ -2495,6 +2542,17 @@ function setMesh(m) {
 }
 
 const FOV = 0.8;
+// column-major 4x4 multiply, for handing the shader one matrix instead of two
+function mul4(a, b) {
+  const o = new Float32Array(16);
+  for (let c = 0; c < 4; c++)
+    for (let r = 0; r < 4; r++) {
+      let v = 0;
+      for (let k = 0; k < 4; k++) v += a[k * 4 + r] * b[c * 4 + k];
+      o[c * 4 + r] = v;
+    }
+  return o;
+}
 function perspective(fov, aspect, near, far) {
   const f = 1 / Math.tan(fov / 2), out = new Float32Array(16);
   out[0] = f / aspect; out[5] = f;
@@ -2515,6 +2573,103 @@ function lookAt(ex, ey, ez, tx, ty, tz) {
     -(sx * ex + sy * ey + sz * ez),
     -(ux * ex + uy * ey + uz * ez),
     (fx * ex + fy * ey + fz * ez), 1]);
+}
+
+// ---------- the solid, raymarched -------------------------------------
+// The viewport used to draw a mesh of a field that was not the printed one:
+// the fins welded on, the joints replaced by display-only grooves. This
+// marches the real plate field instead -- segmented body, pins, cavities,
+// free fin parts -- straight off the grid the exporter samples, so what is
+// on screen is what comes off the printer.
+//
+// Sphere tracing a byte texture: the stored value is a clamped, quantised
+// distance, so it is an under-estimate everywhere and a step of it can never
+// pass through a surface. Empty space is crossed in VIEW_RANGE strides and
+// the steps collapse as the surface arrives.
+const fieldProg = makeProgram(
+'#version 300 es\n' +
+'const vec2 V[3] = vec2[3](vec2(-1.,-1.), vec2(3.,-1.), vec2(-1.,3.));\n' +
+'out vec2 vUV;\n' +
+'void main(){ vUV = V[gl_VertexID]; gl_Position = vec4(V[gl_VertexID],0.,1.); }',
+'#version 300 es\n' +
+'precision highp float;\n' +
+'precision highp sampler3D;\n' +
+'in vec2 vUV;\n' +
+'uniform sampler3D uVol;\n' +
+'uniform vec3 uB0, uB1;\n' +      // the grid's first and last sample, in mm
+'uniform vec3 uN;\n' +            // samples per axis, for the half-texel inset
+'uniform vec3 uEye, uFwd, uRight, uUp;\n' +
+'uniform vec2 uTan;\n' +          // tan(fov/2) horizontally and vertically
+'uniform float uRange;\n' +
+'uniform mat4 uPV;\n' +
+'out vec4 frag;\n' +
+// world mm -> texture coords. The grid is stored with z fastest, so the
+// texture is (z, y, x) and the lookup swizzles; sampling lands on texel
+// centres rather than on the edge of the first one.
+'float fld(vec3 p){\n' +
+'  vec3 t = (p - uB0) / max(uB1 - uB0, vec3(1e-6));\n' +
+'  t = (t * (uN - 1.0) + 0.5) / uN;\n' +
+'  return (texture(uVol, clamp(t, 0.0, 1.0).zyx).r * 2.0 - 1.0) * uRange;\n' +
+'}\n' +
+'vec3 grad(vec3 p, float h){\n' +
+'  vec2 e = vec2(h, 0.0);\n' +
+'  return normalize(vec3(fld(p+e.xyy)-fld(p-e.xyy),\n' +
+'                        fld(p+e.yxy)-fld(p-e.yxy),\n' +
+'                        fld(p+e.yyx)-fld(p-e.yyx)));\n' +
+'}\n' +
+'void main(){\n' +
+'  vec3 dir = normalize(uFwd + uRight*(vUV.x*uTan.x) + uUp*(vUV.y*uTan.y));\n' +
+// slab test against the sampled box: outside it the field is unknown, and
+// marching there would be marching through nothing
+'  vec3 inv = 1.0 / dir;\n' +
+'  vec3 a = (uB0 - uEye) * inv, b = (uB1 - uEye) * inv;\n' +
+'  vec3 lo = min(a, b), hi = max(a, b);\n' +
+'  float t0 = max(max(lo.x, lo.y), max(lo.z, 0.0));\n' +
+'  float t1 = min(min(hi.x, hi.y), hi.z);\n' +
+'  if (t1 <= t0) discard;\n' +
+'  float t = t0, d = 0.0;\n' +
+'  bool hit = false;\n' +
+'  for (int i = 0; i < 220; i++) {\n' +
+'    vec3 p = uEye + dir * t;\n' +
+'    d = fld(p);\n' +
+'    if (d < 0.02) { hit = true; break; }\n' +
+'    t += max(d - 0.03, 0.02);\n' +   // quantisation is +/-0.031; give it back
+'    if (t > t1) break;\n' +
+'  }\n' +
+'  if (!hit) discard;\n' +
+'  vec3 p = uEye + dir * t;\n' +
+'  vec3 N = grad(p, max((uB1.x - uB0.x) / uN.x, 0.05));\n' +
+'  vec3 L1 = normalize(vec3(0.45, 0.6, 0.75));\n' +
+'  vec3 L2 = normalize(vec3(-0.5, -0.3, 0.35));\n' +
+'  float dif = max(dot(N, L1), 0.0) * 0.75 + max(dot(N, L2), 0.0) * 0.25;\n' +
+'  vec3 Vd = normalize(uEye - p);\n' +
+'  float spc = pow(max(dot(N, normalize(L1 + Vd)), 0.0), 40.0) * 0.3;\n' +
+'  vec3 col = vec3(0.91, 0.53, 0.22) * (0.22 + dif) + vec3(spc);\n' +
+'  vec4 cp = uPV * vec4(p, 1.0);\n' +
+'  gl_FragDepth = (cp.z / cp.w) * 0.5 + 0.5;\n' +
+'  frag = vec4(col, 1.0);\n' +
+'}');
+
+let volTex = null, volN = null, volB = null;
+function setVolume(m) {
+  if (!m.vol8 || !m.bounds) { volN = null; return; }
+  if (!volTex) volTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_3D, volTex);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  // (z, y, x): the grid runs z fastest, and re-ordering 12 million samples to
+  // suit the texture would cost more than swizzling the lookup does
+  gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, m.nz, m.ny, m.nx, 0,
+                gl.RED, gl.UNSIGNED_BYTE, m.vol8);
+  for (const k of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R])
+    gl.texParameteri(gl.TEXTURE_3D, k, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  volN = [m.nx, m.ny, m.nz];
+  const B = m.bounds, r = m.res;
+  // the box the samples actually cover: the last sample can sit past the
+  // requested bound, since the grid is ceil()ed up to it
+  volB = [[B.x0, B.y0, B.z0],
+          [B.x0 + (m.nx - 1) * r, B.y0 + (m.ny - 1) * r, B.z0 + (m.nz - 1) * r]];
 }
 
 const orbit = { theta: -2.2, phi: 1.18, r: 260, tx: 75, ty: 0, tz: 18 };
@@ -2556,7 +2711,33 @@ function draw() {
   gl.uniform3f(gl.getUniformLocation(lineProg, 'uC'), 0.16, 0.20, 0.24);
   gl.bindVertexArray(gridVAO);
   gl.drawArrays(gl.LINES, 0, nGrid);
-  if (nIdx) {
+  if (volN) {
+    // the same basis lookAt() built, handed to the shader so it can make a
+    // ray per pixel without inverting anything
+    const fwd = [(orbit.tx - eye[0]), (orbit.ty - eye[1]), (orbit.tz - eye[2])];
+    const fl = Math.hypot(...fwd); fwd.forEach((v, i) => fwd[i] = v / fl);
+    let rt = [fwd[1], -fwd[0], 0];
+    const rl = Math.hypot(...rt) || 1; rt.forEach((v, i) => rt[i] = v / rl);
+    const up = [rt[1] * fwd[2] - rt[2] * fwd[1],
+                rt[2] * fwd[0] - rt[0] * fwd[2],
+                rt[0] * fwd[1] - rt[1] * fwd[0]];
+    const tanV = Math.tan(FOV / 2), tanH = tanV * (w / h);
+    const PV = mul4(P, V);
+    gl.useProgram(fieldProg);
+    const u = n => gl.getUniformLocation(fieldProg, n);
+    gl.uniform3fv(u('uB0'), volB[0]); gl.uniform3fv(u('uB1'), volB[1]);
+    gl.uniform3fv(u('uN'), volN);
+    gl.uniform3fv(u('uEye'), eye); gl.uniform3fv(u('uFwd'), fwd);
+    gl.uniform3fv(u('uRight'), rt); gl.uniform3fv(u('uUp'), up);
+    gl.uniform2f(u('uTan'), tanH, tanV);
+    gl.uniform1f(u('uRange'), NC.VIEW_RANGE);
+    gl.uniformMatrix4fv(u('uPV'), false, PV);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_3D, volTex);
+    gl.uniform1i(u('uVol'), 0);
+    gl.bindVertexArray(emptyVAO);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  } else if (nIdx) {
     gl.useProgram(meshProg);
     gl.uniformMatrix4fv(gl.getUniformLocation(meshProg, 'uP'), false, P);
     gl.uniformMatrix4fv(gl.getUniformLocation(meshProg, 'uV'), false, V);
@@ -2653,15 +2834,21 @@ function onMesh(m) {
     if (queued) { const q = queued; queued = null; runJob(q); }
     return;
   }
-  setMesh(m);
+  // a build with no bounds (the shape itself is broken) has neither, and
+  // setVolume drops the old texture rather than leaving a stale fish up
+  setVolume(m);
+  if (!m.vol8) setMesh(m);
   const first = !lastBounds;
   lastBounds = m.bounds;
   if (first && m.bounds) fitCamera(true);
   document.getElementById('status').textContent = m.bounds
     ? m.size[0].toFixed(0) + '×' + m.size[1].toFixed(0) + '×' +
       m.size[2].toFixed(0) + ' mm · ' +
-      (m.indices.length / 3).toLocaleString() + ' tris · ' + m.ms + ' ms' +
-      (workerReady ? '' : ' · main thread')
+      (m.vol8 ? m.nx + '×' + m.ny + '×' + m.nz + ' field at ' +
+                m.res.toFixed(2) + ' mm' +
+                (m.shapeOnly ? ' · shape only' : '')
+              : (m.indices.length / 3).toLocaleString() + ' tris') +
+      ' · ' + m.ms + ' ms' + (workerReady ? '' : ' · main thread')
     : 'shape has errors';
   document.getElementById('warn').innerHTML =
     m.errors.map(t => '<div class="e">⚠ ' + t + '</div>').join('') +
@@ -2678,14 +2865,18 @@ function runJob(job) {
   setTimeout(() => {
     try {
       const m = NurbsCore.buildMesh(job.shape, job.params, job.res,
-                                    job.cuts, job.field);
+                                    job.cuts, job.field, job.want, job.maxDim);
       m.kind = job.kind; onMesh(m);
     } catch (err) { busy = false; showErr('build failed: ' + err.message); }
   }, 10);
 }
+const MAX3D = gl.getParameter(gl.MAX_3D_TEXTURE_SIZE);
 function requestBuild(draft) {
   const job = { shape: JSON.parse(JSON.stringify(shapeForBuild())),
-                params: Object.assign({}, face), kind: 'view', cuts: true,
+                params: Object.assign({}, face), kind: 'view',
+                // the real printable plate, not the welded preview: the
+                // viewport shows the print now, so it samples what prints
+                cuts: false, field: 'plate', want: 'volume', maxDim: MAX3D,
                 res: draft ? Math.max(finalRes * 1.6, 1.4) : finalRes };
   if (busy) { queued = job; return; }
   runJob(job);
@@ -2694,9 +2885,11 @@ try {
   const glue = document.getElementById('coresrc').textContent +
     ';onmessage=function(e){if(e.data.ping){postMessage({pong:1});return;}' +
     'var m=NurbsCore.buildMesh(e.data.shape,e.data.params,e.data.res,' +
-    'e.data.cuts,e.data.field);' +
-    'delete m.C;m.kind=e.data.kind;' +
-    'postMessage(m,[m.positions.buffer,m.normals.buffer,m.indices.buffer]);};';
+    'e.data.cuts,e.data.field,e.data.want,e.data.maxDim);' +
+    'delete m.C;delete m.vol;m.kind=e.data.kind;' +
+    'var tr=[m.positions.buffer,m.normals.buffer,m.indices.buffer];' +
+    'if(m.vol8)tr.push(m.vol8.buffer);' +
+    'postMessage(m,tr);};';
   worker = new Worker(URL.createObjectURL(new Blob([glue], { type: 'text/javascript' })));
   worker.onmessage = e => {
     if (e.data.pong) { workerReady = true; return; }
@@ -2933,6 +3126,10 @@ requestBuild(true);
 setTimeout(() => requestBuild(false), 60);
 // tiny debug handle for automated tests
 window.__fish = { spec, cam2d, face, curMode: () => mode,
+  // the viewport camera and the field it is marching, so a test can cast the
+  // same rays on the CPU and ask whether the picture is the geometry
+  cam: () => ({ orbit, eye, fov: FOV, w: canvas.width, h: canvas.height,
+                volN, volB }),
   // the cutter boxes in world mm and the world -> screen transform, so a test
   // can put the pointer on a handle rather than guess where one is
   boxes: () => cutterBoxes(prepDirty ? prep2d() : lastPrep), w2s };

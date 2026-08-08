@@ -400,17 +400,30 @@ cut back until they fitted ahead of it, which cost a segment, and on
 the plate the two pairs competed for the same skirt of free space
 beside the body.)
 
-**Shape JSON** exports a file for `flexifish_nurbs.py --shape`. **Save STL**
-builds the real printable plate in the browser — segmented body, joint pins
-and cavities, ball-socket fin parts — at the same 0.3 mm resolution the
-Python tool prints at. Expect a few seconds; its surface-nets mesher can
-leave a handful of non-manifold edges that slicers repair automatically, so
-the Python build stays the pristine path. The JS is a numerically faithful
-port of the Python pipeline, so what you draw is what prints.
+The 3D view **raymarches the printable plate on the GPU**. The build
+samples the real plate field — segmented body, joint pins and cavities,
+free ball-socket fin parts — into a distance grid, hands it to a GLSL
+sphere tracer as a 3D texture, and marches it per pixel. What is on
+screen is the print, not a stand-in for it: the segment gaps are the
+actual joint cuts and the fins are lying where they will lie on the
+plate. Orbiting costs nothing, since the field is already on the GPU;
+only an edit rebuilds it. The quality buttons set the grid spacing,
+which is what the picture's fidelity is limited by (1.0 / 0.7 / 0.5 mm),
+and the status line reports the grid it settled on.
 
-The preview's segment-cut grooves are display only — the grooves and welded
-side fins never touch the printable geometry. On a phone the panel docks to
-the bottom half; one finger drags points, two fingers pan/zoom the drawing.
+If the shape cannot make a plate — a fin socket straddling a joint, say —
+the view falls back to the unsegmented shape and says *shape only*, so
+you can see what you are fixing. Exports never fall back.
+
+**Shape JSON** exports a file for `flexifish_nurbs.py --shape`. **Save STL**
+meshes that same field with surface nets, at the 0.3 mm resolution the
+Python tool prints at. Expect a few seconds; the mesher can leave a handful
+of non-manifold edges that slicers repair automatically, so the Python build
+stays the pristine path. The JS is a numerically faithful port of the Python
+pipeline, so what you draw is what prints.
+
+On a phone the panel docks to the bottom half; one finger drags points, two
+fingers pan/zoom the drawing.
 
 
 ## License Notice
