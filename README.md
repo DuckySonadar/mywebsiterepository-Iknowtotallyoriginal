@@ -377,6 +377,18 @@ on the same field the mesher uses, so it is the cut itself and not a
 picture of one. The joint's *cut* stays where the regions put it; these
 move only the solid that makes it.
 
+In **Draw side** each cutter also gets a **bounding box** — its own
+extent, shroud and overshoot included, not just the part that removes
+material. Drag a **corner** to stretch it fore-aft and vertically at
+once, anchored on the corner opposite, so the far side of the box holds
+still. Drag the **middle** handle to move that one cutter. Both are
+per-joint, so a fish can have one joint nudged forward and the rest left
+alone. Everything a handle writes is a *delta* on the three sliders, so
+the sliders keep moving every cutter afterwards; **double-click a middle
+handle** to throw one cutter's delta away and hand it back to them.
+Across-body scale is not on this box — the side view has no width axis —
+so it stays on the Scale slider, where Draw top shows it.
+
 The side fins are one pair, drawn in **Draw top** under the dorsal fin.
 Each rides a ball socket, and a socket is a hollow rather than a bump —
 a joint cut through one prints it in halves and the fin falls out — so
