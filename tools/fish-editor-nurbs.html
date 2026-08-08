@@ -151,7 +151,9 @@ const FIXED = {
   joint_ball_max: 5.0, joint_capture: 0.20, joint_neck: 0.40,
   joint_style: 'ball', joint_gap: 0.0,
   // where the ring cutter sits, on top of the fit it works out for itself
-  tool_offset: 0.0, tool_lift: 0.0, tool_scale: 1.0
+  tool_offset: 0.0, tool_lift: 0.0, tool_scale: 1.0,
+  // per-joint nudges on top of those, by joint index; see toolPlace()
+  tool_place: []
 };
 
 const DEFAULT_SHAPE = {
@@ -607,6 +609,11 @@ const TOOL = {
   PLATE: 8.0, ANCHOR: 8.5,      // its build plate, and the joint, in its frame
   HW_REF: 20.5, H_REF: 38.75,   // the body section it was authored against
   AHEAD: 11.0, BEHIND: 15.0,    // body it consumes each way, in its own units
+  // its own bounding box, not its footprint: the solid runs y = -2.5 .. 44
+  // about an anchor at 8.5, and z = 8 .. 49.75 off a plate at 8. This is the
+  // box the designer draws handles on, so it has to be the whole solid --
+  // shroud, overshoot and all -- rather than the part that removes material.
+  BOX_AHEAD: 11.0, BOX_BEHIND: 35.5, BOX_TALL: 41.75,
   MIN_SPACING: 26.0,            // ...so joints no closer than the sum of those
   SHATTER: 12.0,                // closer still and the two cuts collide
   THICK: 1.20                   // its own clearance, at scale 1
@@ -802,11 +809,25 @@ function toolSegmentCap(p, first, last, n, S, notes) {
   return m;
 }
 
+// The per-joint nudge for joint `i`, defaulted. Deltas, not absolutes: 0 and
+// 1 mean "wherever the global placement put it", so a global slider still
+// moves a joint that has been dragged by hand.
+function toolPlace(p, i) {
+  const out = { off: 0, lift: 0, long: 1, tall: 1 };
+  const place = p.tool_place || [];
+  if (i < place.length && place[i] && typeof place[i] === 'object')
+    for (const k in out) if (k in place[i]) out[k] = +place[i][k];
+  return out;
+}
+
 function toolJointNotes(p, cuts, S) {
-  const notes = [], errors = [], info = [];
+  const notes = [], errors = [], info = [], lifted = [];
   for (let i = 0; i < cuts.length; i++) {
+    const pl = toolPlace(p, i);
     const sc = toolScales(cuts[i], S);
-    for (const k in sc) sc[k] *= p.tool_scale;
+    sc.wide *= p.tool_scale;
+    sc.long *= p.tool_scale * pl.long;
+    sc.tall *= p.tool_scale * pl.tall;
     const sm = Math.min(sc.wide, Math.min(sc.long, sc.tall));
     const ahead = TOOL.AHEAD * sc.long, behind = TOOL.BEHIND * sc.long;
     const gap = p.joint_gap > 0 ? p.joint_gap : TOOL.THICK * sm;
@@ -825,17 +846,21 @@ function toolJointNotes(p, cuts, S) {
     if (gap < 0.3)
       notes.push('joint x=' + cuts[i].toFixed(0) + ': only ' + gap.toFixed(2) +
         ' mm of clearance — the section is small, so the joint is too');
-    // the tool's own plate is its bottom: nothing below it is ever removed,
-    // so a lifted cutter leaves a continuous bridge of body under every joint
-    if (!i && p.tool_lift > 0.05)
-      notes.push('Lift ' + p.tool_lift.toFixed(1) + ' mm holds the cutter off ' +
-        'the build plate, so that much body is left under every joint and the ' +
-        'segments print as one piece');
-    info.push({ xa: cuts[i], xt: cuts[i] + p.tool_offset,
-                lift: p.tool_lift,
+    const lift = p.tool_lift + pl.lift;
+    if (lift > 0.05) lifted.push(lift);
+    info.push({ xa: cuts[i], xt: cuts[i] + p.tool_offset + pl.off, lift: lift,
                 sWide: sc.wide, sLong: sc.long, sTall: sc.tall,
                 gap: gap, ahead: ahead, behind: behind });
   }
+  // the tool's own plate is its bottom: nothing below it is ever removed, so
+  // a lifted cutter leaves a continuous bridge of body under the joint
+  if (lifted.length)
+    notes.push('the cutter is held up to ' +
+      Math.max(...lifted).toFixed(1) + ' mm off the build plate at ' +
+      (lifted.length === cuts.length ? 'every joint'
+                                     : lifted.length + ' joint(s)') +
+      ', so that much body is left underneath and those segments print as ' +
+      'one piece');
   return { notes: notes, errors: errors, info: info };
 }
 
@@ -1600,7 +1625,8 @@ const NurbsCore = { DEFAULTS, FIXED, DEFAULT_SHAPE, NS, clone, deepMerge,
                     // exported so the ring-joint solid can be held against
                     // joint_tool.py's, which is the only way to know the port
                     // is faithful -- see experiments/ring_joints
-                    TOOL, toolRaw, toolSDF, toolScales, contourSDF };
+                    TOOL, toolRaw, toolSDF, toolScales, toolPlace,
+                    contourSDF };
 if (typeof module !== 'undefined' && module.exports) module.exports = NurbsCore;
 root.NurbsCore = NurbsCore;
 })(typeof self !== 'undefined' ? self : globalThis);
@@ -1781,7 +1807,10 @@ const cutterRows = addGroup('Ring cutter', [
 const cutterNote = document.createElement('p');
 cutterNote.style.cssText = 'color:#8fa0af;font-size:11.5px;margin:-4px 0 10px';
 cutterNote.textContent = 'The cut stays where the regions put it; these move ' +
-  'the solid that makes it. Draw side / Draw top show its cross-section.';
+  'the solid that makes it. Draw side / Draw top show its cross-section, and ' +
+  'in Draw side each cutter gets a box: drag a corner to stretch it from the ' +
+  'opposite corner, the middle to move that one cutter, double-click the ' +
+  'middle to hand it back to these sliders.';
 panel.appendChild(cutterNote);
 cutterRows.push(cutterNote);
 function syncCutterRows() {
@@ -1947,6 +1976,32 @@ function prep2d() {
 function markDirty() { prepDirty = true; }
 
 // ---------- the ring cutter, in cross-section ----------
+// Each cutter's own bounding box in the side plane, and the handles on it.
+// Corners scale the solid, each one anchored on the corner opposite, so a
+// drag stretches the box from the far corner and never slides it. The middle
+// handle moves that cutter alone. Everything is a delta on the panel's three
+// sliders, so those keep working afterwards -- and a double-click on the
+// middle handle throws the delta away.
+//
+// Side view only: it is the plane with the fore-aft and the height axes on
+// it, and those are the two a box in this view can honestly claim to set.
+// Across-body scale stays on the Scale slider, where the top view shows it.
+function cutterBoxes(C) {
+  if (mode !== 'side' || !C.p || C.p.joint_style !== 'tool' || !C.joints)
+    return [];
+  return C.joints.map((j, i) => ({
+    i: i, j: j,
+    x0: j.xt - NC.TOOL.BOX_AHEAD * j.sLong,
+    x1: j.xt + NC.TOOL.BOX_BEHIND * j.sLong,
+    z0: j.lift,
+    z1: j.lift + NC.TOOL.BOX_TALL * j.sTall
+  }));
+}
+// corner order: 0 = (x0,z0), 1 = (x1,z0), 2 = (x1,z1), 3 = (x0,z1)
+function boxCorner(b, k) {
+  return [k === 1 || k === 2 ? b.x1 : b.x0, k >= 2 ? b.z1 : b.z0];
+}
+
 // The plane each view cuts the tool on: the centreline in side view, where the
 // interlocking rings live, and the height of those rings in top view -- a top
 // slice at the plate would show the shroud and none of the linkage, which is
@@ -2108,6 +2163,30 @@ function redraw2d() {
     });
     ectx.globalAlpha = 1;
   }
+
+  // the cutter boxes go last so their handles sit over everything else
+  for (const b of cutterBoxes(C)) {
+    const [sx0, sz0] = w2s(b.x0, b.z0), [sx1, sz1] = w2s(b.x1, b.z1);
+    const on = drag && drag.kind === 'cut' && drag.i === b.i;
+    ectx.strokeStyle = on ? '#bfeaff' : '#7fd8f0';
+    ectx.globalAlpha = on ? 0.95 : 0.55;
+    ectx.lineWidth = 1;
+    ectx.setLineDash([5, 4]);
+    ectx.strokeRect(Math.min(sx0, sx1), Math.min(sz0, sz1),
+                    Math.abs(sx1 - sx0), Math.abs(sz1 - sz0));
+    ectx.setLineDash([]);
+    ectx.globalAlpha = 1;
+    ectx.fillStyle = on ? '#bfeaff' : '#7fd8f0';
+    for (let k = 0; k < 4; k++) {
+      const [sx, sy] = w2s(...boxCorner(b, k));
+      ectx.fillRect(sx - 4.5, sy - 4.5, 9, 9);
+    }
+    const [mx, my] = w2s((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2);
+    ectx.beginPath(); ectx.arc(mx, my, 5.5, 0, 7); ectx.fill();
+    ectx.strokeStyle = '#101820'; ectx.lineWidth = 1.5;
+    ectx.beginPath(); ectx.moveTo(mx - 3, my); ectx.lineTo(mx + 3, my);
+    ectx.moveTo(mx, my - 3); ectx.lineTo(mx, my + 3); ectx.stroke();
+  }
 }
 
 // ---------- 2D interaction ----------
@@ -2125,19 +2204,103 @@ function hitHandle(px, py) {
   }
   return best;
 }
+// Curve points win ties: the cutter boxes overshoot the fish on purpose, so
+// their top corners often land on the back curve, and losing the ability to
+// drag the fish would be the worse trade. Nothing stops you panning a little
+// to separate the two.
+function hitCutter(px, py) {
+  const C = prepDirty ? prep2d() : lastPrep;
+  for (const b of cutterBoxes(C)) {
+    const [mx, my] = w2s((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2);
+    if (Math.hypot(mx - px, my - py) < 11) return { i: b.i, k: 'mid', b };
+    for (let k = 0; k < 4; k++) {
+      const [sx, sy] = w2s(...boxCorner(b, k));
+      if (Math.hypot(sx - px, sy - py) < 11) return { i: b.i, k, b };
+    }
+  }
+  return null;
+}
+
+// Read-modify-write of one joint's entry in tool_place, growing the array to
+// reach it. Absent entries are the global placement, which is what the
+// defaults here spell out.
+function setPlace(i, patch) {
+  const arr = face.tool_place || (face.tool_place = []);
+  while (arr.length <= i) arr.push(null);
+  // rounded on the way in: a pointer lands wherever it lands, and 11.709362
+  // millimetres in an exported config is noise pretending to be a decision
+  for (const k in patch)
+    patch[k] = Math.round(patch[k] * (k === 'off' || k === 'lift' ? 20 : 1000))
+             / (k === 'off' || k === 'lift' ? 20 : 1000);
+  arr[i] = Object.assign({ off: 0, lift: 0, long: 1, tall: 1 },
+                         arr[i] || {}, patch);
+}
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+
 function editDown(px, py) {
   const h = hitHandle(px, py);
   if (h) {
     if (active !== h.name) { active = h.name; buildChips(); }
     selPt = h.i;
     drag = { kind: 'pt', moved: false };
-  } else {
-    drag = { kind: 'pan', px, py };
+    redraw2d();
+    return;
   }
+  const c = hitCutter(px, py);
+  if (c) {
+    const C = lastPrep, b = c.b;
+    const [wx, wz] = s2w(px, py);
+    drag = { kind: 'cut', i: c.i, k: c.k, moved: false,
+             // the far corner stays put for the whole drag, and the automatic
+             // section fit is what the dragged size is expressed against
+             anchor: c.k === 'mid' ? null : boxCorner(b, (c.k + 2) % 4),
+             xa: b.j.xa, auto: NC.toolScales(b.j.xa, C.S),
+             grabX: wx, grabZ: wz,
+             off0: b.j.xt - b.j.xa - face.tool_offset,
+             lift0: b.j.lift - face.tool_lift };
+    redraw2d();
+    return;
+  }
+  drag = { kind: 'pan', px, py };
   redraw2d();
+}
+
+// A corner drag: the box is stretched from the anchor to the pointer, and the
+// result is turned back into the placement that would produce it. The tool's
+// own box is BOX_AHEAD ahead of its anchor point and BOX_BEHIND behind, so a
+// width buys a fore-aft scale and that scale then says where the tool sits.
+function dragCutter(px, py) {
+  const [wx, wz] = s2w(px, py);
+  const T = NC.TOOL, span = T.BOX_AHEAD + T.BOX_BEHIND;
+  const gl = face.tool_scale || 1;
+  if (drag.k === 'mid') {
+    setPlace(drag.i, {
+      off: clamp(drag.off0 + wx - drag.grabX, -80, 80),
+      lift: clamp(drag.lift0 + wz - drag.grabZ, -30, 60) });
+  } else {
+    const [ax, az] = drag.anchor;
+    const sLong = clamp(Math.abs(wx - ax) / span, 0.15, 4);
+    const sTall = clamp(Math.abs(wz - az) / T.BOX_TALL, 0.15, 4);
+    // which side of the anchor the dragged corner is on decides whether the
+    // anchor is the box's front or its back, and its floor or its ceiling
+    const xt = wx > ax ? ax + T.BOX_AHEAD * sLong : ax - T.BOX_BEHIND * sLong;
+    const lift = wz > az ? az : az - T.BOX_TALL * sTall;
+    setPlace(drag.i, {
+      off: clamp(xt - drag.xa - face.tool_offset, -80, 80),
+      lift: clamp(lift - face.tool_lift, -30, 60),
+      long: clamp(sLong / (drag.auto.long * gl), 0.1, 6),
+      tall: clamp(sTall / (drag.auto.tall * gl), 0.1, 6) });
+  }
+  drag.moved = true;
+  markDirty(); redraw2d();
+  if (liveMode === 'live' && Date.now() - liveTimer > 350) {
+    liveTimer = Date.now();
+    requestBuild(true);
+  }
 }
 function editMove(px, py) {
   if (!drag) return;
+  if (drag.kind === 'cut') { dragCutter(px, py); return; }
   if (drag.kind === 'pan') {
     const c = cam2d[mode];
     c.ox -= (px - drag.px) / c.s;
@@ -2160,8 +2323,9 @@ function editMove(px, py) {
   }
 }
 function editUp() {
-  if (drag && drag.kind === 'pt' && drag.moved) requestBuild(false);
+  if (drag && drag.moved && drag.kind !== 'pan') requestBuild(false);
   drag = null;
+  redraw2d();
 }
 editCanvas.addEventListener('mousedown', e => {
   const r = editRect(); editDown(e.clientX - r.left, e.clientY - r.top);
@@ -2171,6 +2335,16 @@ addEventListener('mousemove', e => {
   const r = editRect(); editMove(e.clientX - r.left, e.clientY - r.top);
 });
 addEventListener('mouseup', () => { if (mode !== '3d') editUp(); });
+// double-click a middle handle to give that cutter back to the sliders
+editCanvas.addEventListener('dblclick', e => {
+  const r = editRect();
+  const c = hitCutter(e.clientX - r.left, e.clientY - r.top);
+  if (!c || c.k !== 'mid' || !face.tool_place || !face.tool_place[c.i]) return;
+  face.tool_place[c.i] = null;
+  while (face.tool_place.length && !face.tool_place[face.tool_place.length - 1])
+    face.tool_place.pop();
+  markDirty(); redraw2d(); requestBuild(false);
+});
 editCanvas.addEventListener('wheel', e => {
   e.preventDefault();
   const r = editRect();
@@ -2571,7 +2745,12 @@ document.getElementById('exportBtn').onclick = () => {
 // `face` is built from instead.
 function editorDoc() {
   const base = FACE_BASE(), cfg = {};
-  for (const k in face) if (face[k] !== base[k]) cfg[k] = face[k];
+  // tool_place is an array, so === compares identity and would export it
+  // every time; its contents are plain numbers, so text is a fair test
+  for (const k in face)
+    if (typeof face[k] === 'object'
+        ? JSON.stringify(face[k]) !== JSON.stringify(base[k])
+        : face[k] !== base[k]) cfg[k] = face[k];
   return { version: 1, kind: 'flexifish-nurbs',
            shape: exportShape(), config: cfg };
 }
@@ -2753,7 +2932,10 @@ document.getElementById('stlBtn').onclick = () => {
 requestBuild(true);
 setTimeout(() => requestBuild(false), 60);
 // tiny debug handle for automated tests
-window.__fish = { spec, cam2d, face, curMode: () => mode };
+window.__fish = { spec, cam2d, face, curMode: () => mode,
+  // the cutter boxes in world mm and the world -> screen transform, so a test
+  // can put the pointer on a handle rather than guess where one is
+  boxes: () => cutterBoxes(prepDirty ? prep2d() : lastPrep), w2s };
 } catch (err) { showErr('init failed: ' + err.message); throw err; }
 </script>
 </body>
