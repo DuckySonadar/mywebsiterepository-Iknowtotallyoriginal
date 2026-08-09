@@ -181,6 +181,29 @@ their own, so each carries its own copyright notice at the top — MIT
 requires the notice to survive copying, and a file that travels alone has
 to carry it.
 
+### Who commits, and as whom
+
+Commits arrive from the GitHub web UI, a Mac and Claude Code sessions in
+the cloud, and each brought its own git identity — including a personal
+email published in a public repo and a `…@Users-MacBook-Pro.local` address
+that does not exist. `.mailmap` maps them all onto one canonical author for
+display (`git log`, `git shortlog`, `git blame` read it automatically;
+nothing is rewritten, and GitHub's own contributor graph ignores it).
+`.claude/hooks/session-start.sh` fixes it at the source for remote Claude
+Code sessions, writing `git config --local` only and leaving local sessions
+to whatever identity the machine already has.
+
+The canonical identity is the GitHub account plus GitHub's noreply address —
+it links the commit to the account and keeps a personal email off a public
+repo. On your own machine:
+
+```bash
+git config --global user.name  "DuckySonadar"
+git config --global user.email "77309815+DuckySonadar@users.noreply.github.com"
+```
+
+Claude stays on the commits it helped with as a `Co-Authored-By` trailer.
+
 ## MetaMeld (`tools/sdf-editor.html`)
 
 You build a shape out of signed-distance primitives and it raymarches the
