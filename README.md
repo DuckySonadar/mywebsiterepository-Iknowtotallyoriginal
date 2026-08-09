@@ -17,7 +17,11 @@ josiahs-maker-cave/
 │   └── ...
 ├── inventory-manifest.json    ← Generate this for GitHub Pages (see below)
 ├── tools/                     ← The modelling apps; this repo is their home
-│   ├── sdf-editor.html        ← MetaMeld
+│   ├── sdf-editor.html        ← MetaMeld, built — this is the file that ships
+│   ├── sdf-editor.shell.html  ← its source: everything but the geometry
+│   ├── sinterform/            ← submodule: the geometry kernel, Apache-2.0
+│   ├── build-editor.mjs       ← splices the two into sdf-editor.html
+│   ├── check-kernel.mjs       ← checks the built file
 │   └── fish-editor-nurbs.html ← NURBS fish designer
 ├── css/
 │   └── style.css
@@ -170,11 +174,11 @@ Two licences, on purpose:
 
 | what | licence | file |
 |---|---|---|
-| **SinterForm** — the geometry kernel, the `<script id="sinterform">` block of `tools/sdf-editor.html` | Apache-2.0 | `LICENSE-APACHE` |
+| **SinterForm** — the geometry kernel, vendored at `tools/sinterform/` and inlined into `tools/sdf-editor.html` | Apache-2.0 | `LICENSE-APACHE` |
 | everything else — the site, the MetaMeld application, the fish designer | MIT | `LICENSE` |
 
-The kernel is on its way to its own repository, where it will be consumed
-back into MetaMeld as a submodule. Apache-2.0 rather than MIT because it
+The kernel now lives in [its own repository][sf] and is consumed back into
+MetaMeld as a submodule. Apache-2.0 rather than MIT because it
 carries an express patent grant and an express trademark carve-out (§6),
 which is what a library meant for strangers to embed should say for itself
 rather than leave to a separate file.
@@ -195,27 +199,64 @@ their own, so each carries its own copyright notice at the top — MIT
 requires the notice to survive copying, and a file that travels alone has
 to carry it.
 
-### The kernel seam
+### The kernel, and building MetaMeld
 
-`tools/sdf-editor.html` is one file with a line through it. Above the line
-is **SinterForm**: primitives, booleans, bodies, baked fields, the mesher,
-STL output — 471 lines that touch no DOM, no WebGL, no storage and none of
-the application's state. Below it is MetaMeld, which binds the kernel's
-names once and otherwise reads as it always did.
+**SinterForm** is the geometry: primitives, booleans, bodies, baked fields,
+the mesher, STL output — 471 lines that touch no DOM, no WebGL, no storage
+and none of the application's state. That is what made it liftable, and it
+now lives in [its own repository][sf], pinned here as a submodule at
+`tools/sinterform/`. No npm, no `node_modules`, no bundler: this project has
+no build tooling and that is deliberate.
 
-That seam is what makes the kernel liftable, and it is invisible: nothing
-breaks the day something reaches across it, and the app keeps working right
-up until the kernel is pulled out and does not. So it is checked rather
-than trusted:
+[sf]: https://github.com/DuckySonadar/sinterform
+
+Except for one 30-line script, because MetaMeld's defining property is that
+it is **one file**. It opens from `file://`, it survives being mailed to
+someone, and Add to Home Screen turns it into an app with no server
+anywhere. Splitting the sources must not cost that. So the sources are
+split and the shipped file is assembled:
+
+```
+sdf-editor.shell.html   everything but the geometry, with one marker in it
+  + sinterform/sinterform.js
+  = sdf-editor.html     what actually ships, and what is committed
+```
+
+```bash
+git submodule update --init tools/sinterform   # once, after cloning
+node tools/build-editor.mjs                    # after changing either source
+```
+
+Edit `sdf-editor.shell.html`, never `sdf-editor.html` — the build overwrites
+it. It stays committed so that landing on the repo and opening the file
+works without being told to build anything first.
+
+The build emits the Apache-2.0 notice and licence text into the file itself,
+along with the exact kernel commit it used. §4 asks that attribution be
+retained and the licence included, and the shipped file travels alone —
+nobody who receives it has `LICENSE-APACHE` sitting next to it. A step a
+human has to remember is a step that eventually does not happen, so it isn't
+one.
+
+Then it is checked rather than trusted:
 
 ```bash
 node tools/check-kernel.mjs
 ```
 
-It refuses the kernel if it names anything browser-shaped, runs it under
-node with no DOM at all, and asks it for geometry whose answer is known — a
-sphere's distances, a cut that removes material, two bodies that meet
-without blending. Exit code 0 or 1, so it can be a CI step.
+The assertions moved to SinterForm along with the kernel — a kernel and the
+thing that proves it correct should not live in different repositories — and
+this runs them against the **built** `sdf-editor.html`. It refuses the
+kernel if it names anything browser-shaped, runs it under node with no DOM
+at all, and asks it for geometry whose answer is known: a sphere's
+distances, a cut that removes material, two bodies that meet without
+blending. Exit code 0 or 1, so it can be a CI step.
+
+Running it on the built file rather than on the submodule source is the
+point. The failure it exists for — a literal closing script tag anywhere in
+the kernel, even inside a comment — ends the script element and turns the
+rest of the page into text. That is a property of the assembled HTML, so it
+is checked there. The build refuses to write the file at all in that case.
 
 ### Who commits, and as whom
 

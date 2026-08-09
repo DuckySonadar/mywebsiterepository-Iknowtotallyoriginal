@@ -1,0 +1,3 @@
+[submodule "tools/sinterform"]
+	path = tools/sinterform
+	url = https://github.com/DuckySonadar/sinterform.git
