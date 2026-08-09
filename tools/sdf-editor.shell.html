@@ -274,10 +274,14 @@ try {
 // time rather than captured once.
 // ======================================================================
 const SF = SinterForm;
-// The shader half of the primitives, and the two budgets that belong to a
-// fragment shader rather than to geometry.
+// The shader half of the primitives. SinterForm ships the functions; the
+// budgets are ours, because they are properties of *this* packing: three vec4
+// of uniforms per shape, and four 3D texture units. A consumer that packed
+// shapes into an SSBO would have neither limit, which is why the kernel does
+// not carry these numbers.
 const GL = SinterFormGLSL;
-const { MAXN, MAXFIELDS } = GL;
+const MAXN = 32;
+const MAXFIELDS = 4;
 const { PRIMS, PRIM_KEYS, OPS, RAD, dimIsLength, dimUnit,
         decodeField, encodeField, sampleField,
         smin, smax, invRot,
@@ -749,12 +753,7 @@ uniform vec3 uSelTint;
 // proud of the real d=0 surface the picture is drawn. Loose while a finger
 // is down, tight once the view settles.
 uniform vec2 uHit;
-// GLSL ES 3.0 has no default precision for sampler3D; it must be stated
-precision highp sampler3D;
-uniform sampler3D uField0;
-uniform sampler3D uField1;
-uniform sampler3D uField2;
-uniform sampler3D uField3;
+${GL.samplerDecls(MAXFIELDS).trimEnd()}
 
 // How much of the *accumulated* side survives a smin/smax. The colour has to
 // be mixed with the same weight the distance is, or the blue would sit off
@@ -921,7 +920,7 @@ function rebuildShader() {
       // GL.call knows the sampler-first calling convention for baked
       // primitives, so this no longer has to.
       body += `  di = ${GL.call(n.t, 'q', `uD[${b + 2}].xyz`, `uD[${b + 1}].w`,
-                                 n.fi || 0)};\n`;
+                    Math.min(Math.max(n.fi || 0, 0), MAXFIELDS - 1))};\n`;
       // weight first, then the distance: wmin/wmax need the pre-blend dB
       if (n.op === 'add') {
         body += `  w = wmin(dB, di, uD[${b}].w);\n`;
