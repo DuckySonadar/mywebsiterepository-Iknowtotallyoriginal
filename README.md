@@ -203,8 +203,9 @@ to carry it.
 ### The kernel, and building MetaMeld
 
 **SinterForm** is the geometry: primitives, booleans, bodies, baked fields,
-the mesher, STL output — 471 lines that touch no DOM, no WebGL, no storage
-and none of the application's state. That is what made it liftable, and it
+the mesher, STL output — 577 lines that touch no DOM, no WebGL, no storage and
+none of the application's state, and now not the GPU either: the shader half
+of each primitive is a separate 197-line file, `glsl.js`. That is what made it liftable, and it
 now lives in [its own repository][sf], pinned here as a submodule at
 `tools/sinterform/`. No npm, no `node_modules`, no bundler: this project has
 no build tooling and that is deliberate.
