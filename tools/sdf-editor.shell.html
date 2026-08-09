@@ -274,7 +274,7 @@ try {
 // time rather than captured once.
 // ======================================================================
 const SF = SinterForm;
-const { MAXN, MAXFIELDS, PRIMS, PRIM_KEYS, OPS, RAD,
+const { MAXN, MAXFIELDS, PRIMS, PRIM_KEYS, OPS, RAD, dimIsLength, dimUnit,
         decodeField, encodeField, sampleField,
         smin, smax, invRot,
         sceneSDF, sceneBounds, surfaceNets, meshToSTL } = SF;
@@ -532,9 +532,12 @@ function scaleSelection(f) {
       n.p[i] = Math.min(Math.max(C[i] + (n.p[i] - C[i]) * f, -POSLIM), POSLIM);
     const P = PRIMS[n.t];
     // a plane has no size; a baked field's box is the grid it samples, and
-    // scaling that would resample it wrong, so both are left alone
+    // scaling that would resample it wrong, so both are left alone. Within a
+    // shape, only the dims that are lengths scale: a hexagon scaled by 1.5 is
+    // a bigger hexagon, not a nine-sided one, and a 90° arc stays 90°.
     if (!P.infinite && !P.baked)
-      for (let i = 0; i < n.d.length; i++) n.d[i] *= f;
+      for (let i = 0; i < n.d.length; i++)
+        if (dimIsLength(n.t, i)) n.d[i] *= f;
     n.k *= f;
     if (n.round) n.round *= f;
   }
@@ -1676,7 +1679,7 @@ function renderInspector() {
   add(sliderRow('Blend', ' mm', () => n.k, v => n.k = v, 0, 25, 0.25));
 
   P.dims.forEach(([lbl, mn, mx, st], i) =>
-    add(sliderRow(lbl, ' mm', () => n.d[i], v => n.d[i] = v, mn, mx, st)));
+    add(sliderRow(lbl, dimUnit(n.t, i), () => n.d[i], v => n.d[i] = v, mn, mx, st)));
   if (P.round)
     add(sliderRow('Corner round', ' mm', () => n.round, v => n.round = v, 0, 20, 0.25));
 

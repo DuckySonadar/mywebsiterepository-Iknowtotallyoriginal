@@ -258,6 +258,19 @@ the kernel, even inside a comment — ends the script element and turns the
 rest of the page into text. That is a property of the assembled HTML, so it
 is checked there. The build refuses to write the file at all in that case.
 
+Two more checks live in the submodule and are worth running after touching
+geometry:
+
+```bash
+node tools/sinterform/check-primitives.mjs   # is each primitive a real distance function?
+node tools/sinterform/check-glsl.mjs         # do the GLSL and JS twins agree?
+```
+
+The first matters because `map()` is one fold: a primitive that over-estimates
+distance shortens the safe step for *every* ray in the scene, not just the
+ones near it. It prints the maximum safe raymarch step the whole set implies —
+currently 0.817, against the 0.72 the shader uses.
+
 ### Who commits, and as whom
 
 Commits arrive from the GitHub web UI, a Mac and Claude Code sessions in
