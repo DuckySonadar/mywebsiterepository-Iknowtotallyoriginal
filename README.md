@@ -166,8 +166,22 @@ Neither of these is a file, but both will break quietly if ignored:
 
 ## Licence and the MetaMeld name
 
-The code in this repository is **MIT** (see `LICENSE`) — use it, embed it,
-sell what you build with it, owe nobody anything.
+Two licences, on purpose:
+
+| what | licence | file |
+|---|---|---|
+| **SinterForm** — the geometry kernel, the `<script id="sinterform">` block of `tools/sdf-editor.html` | Apache-2.0 | `LICENSE-APACHE` |
+| everything else — the site, the MetaMeld application, the fish designer | MIT | `LICENSE` |
+
+The kernel is on its way to its own repository, where it will be consumed
+back into MetaMeld as a submodule. Apache-2.0 rather than MIT because it
+carries an express patent grant and an express trademark carve-out (§6),
+which is what a library meant for strangers to embed should say for itself
+rather than leave to a separate file.
+
+Both are permissive and both are the owner's to grant, so the split is a
+choice rather than a conflict. Nothing narrows either: use any of it, embed
+it, sell what you build with it, owe nobody anything.
 
 **MetaMeld™ is a trademark and is not covered by that licence.** MIT is a
 copyright licence and says nothing about names, so the reservation is
@@ -180,6 +194,28 @@ Both editors are single self-contained files that get copied around on
 their own, so each carries its own copyright notice at the top — MIT
 requires the notice to survive copying, and a file that travels alone has
 to carry it.
+
+### The kernel seam
+
+`tools/sdf-editor.html` is one file with a line through it. Above the line
+is **SinterForm**: primitives, booleans, bodies, baked fields, the mesher,
+STL output — 471 lines that touch no DOM, no WebGL, no storage and none of
+the application's state. Below it is MetaMeld, which binds the kernel's
+names once and otherwise reads as it always did.
+
+That seam is what makes the kernel liftable, and it is invisible: nothing
+breaks the day something reaches across it, and the app keeps working right
+up until the kernel is pulled out and does not. So it is checked rather
+than trusted:
+
+```bash
+node tools/check-kernel.mjs
+```
+
+It refuses the kernel if it names anything browser-shaped, runs it under
+node with no DOM at all, and asks it for geometry whose answer is known — a
+sphere's distances, a cut that removes material, two bodies that meet
+without blending. Exit code 0 or 1, so it can be a CI step.
 
 ### Who commits, and as whom
 

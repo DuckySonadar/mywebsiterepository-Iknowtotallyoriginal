@@ -259,7 +259,27 @@ addEventListener('unhandledrejection',
   e => showErr('Error: ' + ((e.reason && e.reason.message) || e.reason)));
 </script>
 
-<script>
+<script id="sinterform">
+/* SinterForm - a signed-distance geometry kernel
+ * Copyright (c) 2026 DuckySonadar
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Primitives, boolean operations with smooth blends, bodies, baked distance
+ * fields, GLSL sources for a raymarcher, a surface-nets mesher and binary STL
+ * output. No DOM, no WebGL, no storage: it computes geometry and hands it
+ * back. That is what makes it liftable into its own repository, and what
+ * keeps it usable from node -- which is how it gets tested.
+ *
+ * This block is the whole of it. Everything past the end of this script
+ * element is the MetaMeld(TM) application, which is separately licensed; the
+ * boundary is this file's seam, and it is load-bearing. Nothing in here may
+ * reach for `document`, `gl`, `localStorage` or the application's own state.
+ *
+ * (And nothing in here may spell the closing script tag, even inside a
+ * comment -- HTML ends the element on the literal characters and the page
+ * dies. This comment used to, which is how that was learnt.)
+ */
+(function (root) {
 "use strict";
 // ======================================================================
 // SDF core — every primitive is written twice, GLSL for the live preview
@@ -689,11 +709,47 @@ function meshToSTL(m, header) {
   }
   return new Blob([buf], { type: 'model/stl' });
 }
+
+// ----------------------------------------------------------------------
+// The public surface.
+//
+// `fields` is a live accessor rather than a plain value: it is the baked
+// field library, the kernel reads it when evaluating a `field` primitive,
+// and the application replaces the whole array on load and on import. A
+// copied reference would leave the two looking at different arrays, and the
+// symptom would be a baked shape that renders as the one you opened before.
+// ----------------------------------------------------------------------
+const SinterForm = {
+  MAXN, MAXFIELDS, PRIMS, PRIM_KEYS, OPS, RAD,
+  get fields() { return fields; },
+  set fields(v) { fields = v; },
+  decodeField, encodeField, sampleField,
+  smin, smax, invRot,
+  sceneSDF, sceneBounds, surfaceNets, meshToSTL
+};
+if (typeof module !== 'undefined' && module.exports) module.exports = SinterForm;
+root.SinterForm = SinterForm;
+})(typeof self !== 'undefined' ? self : globalThis);
 </script>
 
 <script>
 "use strict";
 try {
+// ======================================================================
+// MetaMeld — the application. Everything above is SinterForm, under a
+// different licence; see TRADEMARK.md and the header on that block.
+//
+// The kernel's names are bound once here so the code below reads the way it
+// did before the two were separated. `fields` is deliberately NOT bound: it
+// is mutable state living in the kernel, so it is reached through SF every
+// time rather than captured once.
+// ======================================================================
+const SF = SinterForm;
+const { MAXN, MAXFIELDS, PRIMS, PRIM_KEYS, OPS, RAD,
+        decodeField, encodeField, sampleField,
+        smin, smax, invRot,
+        sceneSDF, sceneBounds, surfaceNets, meshToSTL } = SF;
+
 // ======================================================================
 // document / state
 // ======================================================================
@@ -767,7 +823,7 @@ const bodyShapeCount = id => nodes.filter(n => n.op === 'add' && n.b === id).len
 let activeField = 0;
 
 function bakeBody(id, res) {
-  if (fields.length >= MAXFIELDS)
+  if (SF.fields.length >= MAXFIELDS)
     throw new Error(`the library holds ${MAXFIELDS}; delete one first`);
   const own = nodes.filter(n => n.op === 'add' ? n.b === id : hits(n, id));
   if (!own.some(n => n.op === 'add')) throw new Error('that body is empty');
@@ -798,9 +854,9 @@ function bakeBody(id, res) {
     }
   }
   const box = [0, 1, 2].map(a => (hi[a] - lo[a]) / 2);
-  fields.push({ name: (bodyById(id) || {}).name || 'Baked',
+  SF.fields.push({ name: (bodyById(id) || {}).name || 'Baked',
                 nx: n[0], ny: n[1], nz: n[2], box, range, data, tex: null });
-  return { fi: fields.length - 1,
+  return { fi: SF.fields.length - 1,
            centre: [0, 1, 2].map(a => (lo[a] + hi[a]) / 2), box, range };
 }
 
@@ -1048,7 +1104,7 @@ function undo() {
 function save() {
   try { localStorage.setItem(STORE, JSON.stringify(
       { nodes, bodies, sel, activeBody,
-        fields: fields.length ? fields.map(encodeField) : undefined })); }
+        fields: SF.fields.length ? SF.fields.map(encodeField) : undefined })); }
   catch (e) { /* private browsing: editing still works, it just won't persist */ }
 }
 
@@ -1066,8 +1122,8 @@ function adopt(doc) {
   // the first exports used, still read so those documents keep working.
   const raw = doc.fields || (doc.field ? [doc.field] : []);
   const incoming = raw.slice(0, MAXFIELDS).map(decodeField).filter(Boolean);
-  for (const f of fields) if (f.tex) gl.deleteTexture(f.tex);
-  fields = incoming;
+  for (const f of SF.fields) if (f.tex) gl.deleteTexture(f.tex);
+  SF.fields = incoming;
   nodes = kept;
   bodies = (doc.bodies || []).filter(b => b && typeof b.id === 'number')
              .map(b => ({ id: b.id, name: String(b.name || 'Body ' + (b.id + 1)),
@@ -1082,7 +1138,7 @@ function adopt(doc) {
     if (typeof n.b !== 'number') n.b = 0;
     if (typeof n.fi !== 'number') n.fi = 0;
     if (PRIMS[n.t].baked) n.fi = Math.min(Math.max(n.fi, 0),
-                                          Math.max(fields.length - 1, 0));
+                                          Math.max(SF.fields.length - 1, 0));
     if (n.op === 'add') n.tg = null;
     else if (n.tg && !Array.isArray(n.tg)) n.tg = null;
     if (Array.isArray(n.tg)) n.tg = n.tg.filter(id => typeof id === 'number');
@@ -1375,7 +1431,7 @@ function bindField() {
       gl.texParameteri(gl.TEXTURE_3D, k, gl.LINEAR);
   }
   for (let i = 0; i < MAXFIELDS; i++) {
-    const f = fields[i];
+    const f = SF.fields[i];
     if (f && !f.tex) {
       f.tex = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_3D, f.tex);
@@ -1715,7 +1771,7 @@ $('selSeg').onclick = e => {
 function renderBaked() {
   const box = $('baked');
   box.innerHTML = '';
-  fields.forEach((f, i) => {
+  SF.fields.forEach((f, i) => {
     const used = nodes.filter(n => PRIMS[n.t].baked && n.fi === i).length;
     const el = document.createElement('div');
     el.className = 'node body' + (i === activeField ? ' sel' : '');
@@ -1740,18 +1796,18 @@ function renderBaked() {
         if (used) { showErr(`${used} shape(s) still use ${f.name}`); return; }
         snapshot();
         if (f.tex) gl.deleteTexture(f.tex);
-        fields.splice(i, 1);
+        SF.fields.splice(i, 1);
         // instances after it shift down with it
         for (const n of nodes)
           if (PRIMS[n.t].baked && n.fi > i) n.fi--;
-        activeField = Math.max(0, Math.min(activeField, fields.length - 1));
+        activeField = Math.max(0, Math.min(activeField, SF.fields.length - 1));
       } else activeField = i;
       rebuildShader(); renderList(); renderInspector(); save(); needDraw();
     };
     box.appendChild(el);
   });
-  $('bakedCount').textContent = fields.length
-    ? fields.length + '/' + MAXFIELDS : '';
+  $('bakedCount').textContent = SF.fields.length
+    ? SF.fields.length + '/' + MAXFIELDS : '';
 }
 
 function renameField(f) {
@@ -2240,7 +2296,7 @@ function updateInfo() {
 // ---------- add / duplicate / delete ----------
 $('addBtn').onclick = () => {
   openModal('Add a shape',
-    `<div class="picker">${PRIM_KEYS.filter(k => !PRIMS[k].baked || fields.length)
+    `<div class="picker">${PRIM_KEYS.filter(k => !PRIMS[k].baked || SF.fields.length)
       .map(k =>
       `<button data-prim="${k}">${PRIMS[k].name}</button>`).join('')}</div>`,
     card => {
@@ -2252,10 +2308,10 @@ $('addBtn').onclick = () => {
         const fresh = makeNode(b.dataset.prim);
         // a field node carries no dimensions of its own: its box and its
         // quantisation range come from the document's baked grid
-        if (PRIMS[fresh.t].baked && fields.length) {
-          fresh.fi = Math.min(activeField, fields.length - 1);
-          fresh.d = fields[fresh.fi].box.slice();
-          fresh.round = fields[fresh.fi].range;
+        if (PRIMS[fresh.t].baked && SF.fields.length) {
+          fresh.fi = Math.min(activeField, SF.fields.length - 1);
+          fresh.d = SF.fields[fresh.fi].box.slice();
+          fresh.round = SF.fields[fresh.fi].range;
         }
         fresh.b = activeBody;      // build into the body you are standing in
         nodes.push(fresh);
@@ -2384,7 +2440,7 @@ $('startBtn').onclick = () => {
 // select by hand. These are the same document, through a file instead.
 function currentDoc() {
   return { version: 2, bodies, nodes,
-           fields: fields.length ? fields.map(encodeField) : undefined };
+           fields: SF.fields.length ? SF.fields.map(encodeField) : undefined };
 }
 $('saveBtn').onclick = () => {
   const name = (prompt('Save as', 'metameld_model.json') || '').trim();
@@ -2407,11 +2463,11 @@ function importDoc(d) {
                     + `the limit is ${MAXN}`);
   const rawF = d.fields || (d.field ? [d.field] : []);
   const newF = rawF.map(decodeField).filter(Boolean);
-  if (fields.length + newF.length > MAXFIELDS)
-    throw new Error(`that would make ${fields.length + newF.length} baked `
+  if (SF.fields.length + newF.length > MAXFIELDS)
+    throw new Error(`that would make ${SF.fields.length + newF.length} baked `
                     + `shapes; the limit is ${MAXFIELDS}`);
-  const fBase = fields.length;
-  fields = fields.concat(newF);
+  const fBase = SF.fields.length;
+  SF.fields = SF.fields.concat(newF);
 
   const idBase = bodies.reduce((m, b) => Math.max(m, b.id), -1) + 1;
   const srcBodies = (d.bodies || []).filter(b => b && typeof b.id === 'number');
@@ -2489,7 +2545,7 @@ $('jsonBtn').onclick = () => {
       const ta = $('jsonTa');
       ta.value = JSON.stringify(
         { version: 2, bodies, nodes,
-          fields: fields.length ? fields.map(encodeField) : undefined },
+          fields: SF.fields.length ? SF.fields.map(encodeField) : undefined },
         null, 1);
       $('jsCopy').onclick = () => {
         ta.select();
