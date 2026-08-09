@@ -164,6 +164,23 @@ Neither of these is a file, but both will break quietly if ignored:
 
 ---
 
+## Licence and the MetaMeld name
+
+The code in this repository is **MIT** (see `LICENSE`) — use it, embed it,
+sell what you build with it, owe nobody anything.
+
+**MetaMeld™ is a trademark and is not covered by that licence.** MIT is a
+copyright licence and says nothing about names, so the reservation is
+spelled out in `TRADEMARK.md` rather than left to be inferred. The short
+version: fork it freely and call your fork something else; "a MetaMeld
+plugin" and "built with MetaMeld" need no permission; a modified build
+distributed *as* MetaMeld does.
+
+Both editors are single self-contained files that get copied around on
+their own, so each carries its own copyright notice at the top — MIT
+requires the notice to survive copying, and a file that travels alone has
+to carry it.
+
 ## MetaMeld (`tools/sdf-editor.html`)
 
 You build a shape out of signed-distance primitives and it raymarches the

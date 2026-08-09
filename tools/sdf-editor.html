@@ -2,6 +2,18 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!--
+  MetaMeld - signed-distance modelling in the browser
+  Copyright (c) 2026 DuckySonadar
+  Released under the MIT License; see LICENSE in the repository root.
+
+  This file is self-contained and travels on its own, so the notice has to
+  travel with it: MIT requires the copyright notice be kept in all copies.
+
+  MetaMeld(TM) is a trademark of DuckySonadar. The MIT licence covers the
+  code and not the name -- fork it freely, but call your fork something
+  else. See TRADEMARK.md; it is short, and it grants more than it withholds.
+-->
 <!-- viewport-fit=cover + safe-area padding below: without it iOS puts the
      bottom sheet under the home indicator -->
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
@@ -54,6 +66,7 @@
   /* full-screen off the Home Screen there is no tab to read the name from */
   #brand { color:var(--ink); font-size:13px; font-weight:600;
            letter-spacing:.02em; white-space:nowrap; padding:8px 0; }
+  .tm { font-size:.62em; vertical-align:.5em; opacity:.75; margin-left:.5px; }
   /* a phone needs the width for the controls, and its shortcut is labelled */
   @media (max-width:560px) { #brand { display:none; } }
   #errbar { position:fixed; top:calc(env(safe-area-inset-top) + 52px);
@@ -161,7 +174,10 @@
   <!-- target=_top so the link home escapes the iframe when the editor is
        embedded in the site's EDITOR section; a no-op when it runs standalone -->
   <a id="back" href="https://josiahsmakercave.xyz/" target="_top">‹ Maker Cave</a>
-  <span id="brand">MetaMeld</span>
+  <!-- the visible wordmark asserts the mark; the Home Screen label and
+       <title> stay plain, since a shortcut name with a (TM) in it reads
+       badly and the claim is already made here and in TRADEMARK.md -->
+  <span id="brand">MetaMeld<sup class="tm">™</sup></span>
   <div class="seg" id="modeSeg">
     <button data-mode="orbit" class="on">Orbit</button>
     <button data-mode="grab">Move</button>
@@ -2576,7 +2592,7 @@ $('stlBtn').onclick = () => {
       building = false; $('stlBtn').disabled = false; setStatus('');
       return;
     }
-    const blob = meshToSTL(mesh, 'MetaMeld model (mm)');
+    const blob = meshToSTL(mesh, 'MetaMeld(TM) model (mm) - metameld');
     cached = { key: stlKey(res), blob };
     building = false; $('stlBtn').disabled = false;
     setStatus(nt.toLocaleString() + ' triangles · ' +
