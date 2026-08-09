@@ -274,7 +274,11 @@ try {
 // time rather than captured once.
 // ======================================================================
 const SF = SinterForm;
-const { MAXN, MAXFIELDS, PRIMS, PRIM_KEYS, OPS, RAD, dimIsLength, dimUnit,
+// The shader half of the primitives, and the two budgets that belong to a
+// fragment shader rather than to geometry.
+const GL = SinterFormGLSL;
+const { MAXN, MAXFIELDS } = GL;
+const { PRIMS, PRIM_KEYS, OPS, RAD, dimIsLength, dimUnit,
         decodeField, encodeField, sampleField,
         smin, smax, invRot,
         sceneSDF, sceneBounds, surfaceNets, meshToSTL } = SF;
@@ -782,7 +786,7 @@ vec3 invRot(vec3 p, vec3 e){
   c = cos(e.x); s = sin(e.x); q = vec3( q.x, c*q.y + s*q.z, -s*q.y + c*q.z);
   return q;
 }
-${PRIM_KEYS.map(k => PRIMS[k].glsl).join('\n')}
+${GL.library(PRIM_KEYS)}
 
 float map(vec3 P){
   float d = 1e9, dB, di, w, sw = 0.0, swB = 0.0; vec3 q;
@@ -914,10 +918,10 @@ function rebuildShader() {
       if (n.my) body += '  q.y = abs(q.y);\n';
       if (n.mz) body += '  q.z = abs(q.z);\n';
       body += `  q = invRot(q - uD[${b}].xyz, uD[${b + 1}].xyz);\n`;
-      body += PRIMS[n.t].baked
-        ? `  di = pFieldS(uField${Math.min(n.fi || 0, MAXFIELDS - 1)}, q, `
-          + `uD[${b + 2}].xyz, uD[${b + 1}].w);\n`
-        : `  di = ${PRIMS[n.t].fn}(q, uD[${b + 2}].xyz, uD[${b + 1}].w);\n`;
+      // GL.call knows the sampler-first calling convention for baked
+      // primitives, so this no longer has to.
+      body += `  di = ${GL.call(n.t, 'q', `uD[${b + 2}].xyz`, `uD[${b + 1}].w`,
+                                 n.fi || 0)};\n`;
       // weight first, then the distance: wmin/wmax need the pre-blend dB
       if (n.op === 'add') {
         body += `  w = wmin(dB, di, uD[${b}].w);\n`;

@@ -20,7 +20,8 @@ josiahs-maker-cave/
 │   ├── sdf-editor.html        ← MetaMeld, built — this is the file that ships
 │   ├── sdf-editor.shell.html  ← its source: everything but the geometry
 │   ├── sinterform/            ← submodule: the geometry kernel, Apache-2.0
-│   ├── build-editor.mjs       ← splices the two into sdf-editor.html
+│   │     sinterform.js  the geometry · glsl.js  its shader half
+│   ├── build-editor.mjs       ← splices them into sdf-editor.html
 │   ├── check-kernel.mjs       ← checks the built file
 │   └── fish-editor-nurbs.html ← NURBS fish designer
 ├── css/
@@ -218,9 +219,15 @@ split and the shipped file is assembled:
 
 ```
 sdf-editor.shell.html   everything but the geometry, with one marker in it
-  + sinterform/sinterform.js
+  + sinterform/sinterform.js    the geometry
+  + sinterform/glsl.js          the shader half of it
   = sdf-editor.html     what actually ships, and what is committed
 ```
+
+The kernel and its shader are separate files because they are used
+separately — a mesher or a test wants the geometry without a GPU anywhere
+near it. They arrive in one script element here only because MetaMeld ships
+as one file.
 
 ```bash
 git submodule update --init tools/sinterform   # once, after cloning

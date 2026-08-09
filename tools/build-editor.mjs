@@ -28,13 +28,17 @@ const CLOSE = '</' + 'script>';
 const die = (m) => { console.error(`build: ${m}`); process.exit(1); };
 
 const shell = read('sdf-editor.shell.html');
-const kernel = read('sinterform', 'sinterform.js');
+// Two files now: the geometry, and the shader half of it. They are spliced
+// into one script element because MetaMeld ships as one file, but they are
+// separate sources because the kernel has no business knowing about a GPU.
+const kernel = read('sinterform', 'sinterform.js')
+             + '\n' + read('sinterform', 'glsl.js');
 
 if (shell.split(MARK).length !== 2) die(`the shell needs exactly one ${MARK}`);
 // The one that takes the page down: HTML ends the script element on these
 // characters wherever they appear, comment or not, and everything after the
 // kernel becomes text. Refuse to write the file rather than ship a blank page.
-if (kernel.includes(CLOSE)) die('the kernel contains a closing script tag');
+if (kernel.includes(CLOSE)) die('the kernel sources contain a closing script tag');
 
 const pin = execFileSync('git', ['-C', join(HERE, 'sinterform'), 'rev-parse', 'HEAD'],
                          { encoding: 'utf8' }).trim();
