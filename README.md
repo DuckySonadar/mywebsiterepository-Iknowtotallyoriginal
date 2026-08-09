@@ -164,6 +164,46 @@ Neither of these is a file, but both will break quietly if ignored:
 
 ---
 
+## Licence and the MetaMeld name
+
+The code in this repository is **MIT** (see `LICENSE`) — use it, embed it,
+sell what you build with it, owe nobody anything.
+
+**MetaMeld™ is a trademark and is not covered by that licence.** MIT is a
+copyright licence and says nothing about names, so the reservation is
+spelled out in `TRADEMARK.md` rather than left to be inferred. The short
+version: fork it freely and call your fork something else; "a MetaMeld
+plugin" and "built with MetaMeld" need no permission; a modified build
+distributed *as* MetaMeld does.
+
+Both editors are single self-contained files that get copied around on
+their own, so each carries its own copyright notice at the top — MIT
+requires the notice to survive copying, and a file that travels alone has
+to carry it.
+
+### Who commits, and as whom
+
+Commits arrive from the GitHub web UI, a Mac and Claude Code sessions in
+the cloud, and each brought its own git identity — including a personal
+email published in a public repo and a `…@Users-MacBook-Pro.local` address
+that does not exist. `.mailmap` maps them all onto one canonical author for
+display (`git log`, `git shortlog`, `git blame` read it automatically;
+nothing is rewritten, and GitHub's own contributor graph ignores it).
+`.claude/hooks/session-start.sh` fixes it at the source for remote Claude
+Code sessions, writing `git config --local` only and leaving local sessions
+to whatever identity the machine already has.
+
+The canonical identity is the GitHub account plus GitHub's noreply address —
+it links the commit to the account and keeps a personal email off a public
+repo. On your own machine:
+
+```bash
+git config --global user.name  "DuckySonadar"
+git config --global user.email "77309815+DuckySonadar@users.noreply.github.com"
+```
+
+Claude stays on the commits it helped with as a `Co-Authored-By` trailer.
+
 ## MetaMeld (`tools/sdf-editor.html`)
 
 You build a shape out of signed-distance primitives and it raymarches the
