@@ -1,0 +1,53 @@
+# What has to be true of tools/sdf-editor.html before it ships.
+#
+# It ships straight off `main` with nothing in front of it, and it is *built*:
+# a shell, plus a kernel that lives in another repository. There are two ways
+# that goes wrong without anyone noticing, and this exists because both of them
+# already have.
+#
+#   - The committed build drifts from its sources — the submodule moves and
+#     nobody rebuilds, or someone edits the built file by hand. The file being
+#     served is then not the file the sources describe.
+#   - The kernel is sound in its own repository and broken in the one place it
+#     is actually used. Spliced into HTML, a stray closing script tag anywhere
+#     in it — a comment will do — ends the element and turns the rest of the
+#     page into text.
+#
+# Both are properties of the assembled file rather than of any source, so both
+# are checked on the assembled file.
+#
+# This is not the site's deployment. Pages builds `main` on its own; this only
+# says whether what is there deserves to be.
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  editor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The kernel. Nothing below can run without it, and a checkout that
+          # cannot reach it failing loudly here is worth having: that is
+          # exactly how the site's own deploy broke, silently, for a day.
+          submodules: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The build is deterministic, so rebuilding a correct tree changes
+      # nothing. A diff means the committed file and its sources disagree.
+      - name: the committed build is current
+        run: |
+          node tools/build-editor.mjs
+          git diff --exit-code -- tools/sdf-editor.html
+
+      # The kernel's own assertions, from the kernel's own repository, run
+      # against the file this repository actually serves.
+      - name: the kernel in the built file is sound
+        run: node tools/check-kernel.mjs
