@@ -21,6 +21,7 @@ josiahs-maker-cave/
 │   ├── sdf-editor.shell.html  ← its source: everything but the geometry
 │   ├── sinterform/            ← submodule: the geometry kernel, Apache-2.0
 │   │     sinterform.js  the geometry · glsl.js  its shader half
+│   │     glmesh.js      optional: fills the mesher's grid on the GPU
 │   ├── build-editor.mjs       ← splices them into sdf-editor.html
 │   ├── check-kernel.mjs       ← checks the built file
 │   └── fish-editor-nurbs.html ← NURBS fish designer
@@ -203,12 +204,13 @@ to carry it.
 ### The kernel, and building MetaMeld
 
 **SinterForm** is the geometry: primitives, booleans, bodies, baked fields,
-the mesher, STL output — 577 lines that touch no DOM, no WebGL, no storage and
-none of the application's state, and now not the GPU either: the shader half
-of each primitive is a separate 197-line file, `glsl.js`. That is what made it liftable, and it
-now lives in [its own repository][sf], pinned here as a submodule at
-`tools/sinterform/`. No npm, no `node_modules`, no bundler: this project has
-no build tooling and that is deliberate.
+the mesher, STL output — 1,411 lines that touch no DOM, no WebGL, no storage
+and none of the application's state, and not the GPU either: the shader half
+of each primitive is a separate file, `glsl.js`, and the JS in the kernel is
+*generated from it* rather than written beside it. That is what made it
+liftable, and it now lives in [its own repository][sf], pinned here as a
+submodule at `tools/sinterform/`. No npm, no `node_modules`, no bundler: this
+project has no build tooling and that is deliberate.
 
 [sf]: https://github.com/DuckySonadar/sinterform
 
@@ -219,9 +221,10 @@ anywhere. Splitting the sources must not cost that. So the sources are
 split and the shipped file is assembled:
 
 ```
-sdf-editor.shell.html   everything but the geometry, with one marker in it
-  + sinterform/sinterform.js    the geometry
-  + sinterform/glsl.js          the shader half of it
+sdf-editor.shell.html   everything but the geometry, with two markers in it
+  + sinterform/sinterform.js    the geometry           ⎫ one script element
+  + sinterform/glsl.js          the shader half of it  ⎭
+  + sinterform/glmesh.js        the grid fill, on the GPU — its own element
   = sdf-editor.html     what actually ships, and what is committed
 ```
 
@@ -229,6 +232,14 @@ The kernel and its shader are separate files because they are used
 separately — a mesher or a test wants the geometry without a GPU anywhere
 near it. They arrive in one script element here only because MetaMeld ships
 as one file.
+
+`glmesh.js` gets an element of its own, and for the same reason stated the
+other way round. It exists to *drive* a GL context: it fills the mesher's
+sample grid on the GPU instead of in JavaScript, which is what makes the
+meshed viewport and the STL export quick. Every line of it names something
+`check-kernel.mjs` refuses to find in a kernel, so putting it in the block
+above would be claiming it is geometry. It is not, and MetaMeld treats it as
+optional — everything works without it, more slowly.
 
 ```bash
 git submodule update --init tools/sinterform   # once, after cloning
@@ -329,10 +340,20 @@ A model is an ordered list of shapes, each applied to what came before:
 - **Mirror X/Y/Z** repeats the shape across that plane, which is how you
   place symmetric features (bolt holes, fins) once instead of twice.
 - Primitives: sphere, box, cylinder, capsule, torus, cone (separate base
-  and top radii — set the top to 0 for a point), ellipsoid, and a
-  **plane cut**. An unrotated plane cut at z = 0 keeps everything above
-  the plate, which is the flat-bottom trick every print-in-place part
+  and top radii — set the top to 0 for a point), ellipsoid, prism (a
+  regular n-gon extruded, 3 to 12 sides), pyramid, octahedron, dome (a
+  sphere cut at a height you choose, so less or more than a hemisphere),
+  arc (a torus swept through part of a turn — the hinge and spring shape),
+  link (a chain link standing on end, so the next one threads through it),
+  and a **plane cut**. An unrotated plane cut at z = 0 keeps everything
+  above the plate, which is the flat-bottom trick every print-in-place part
   wants. The readout warns when the model reaches below the plate.
+
+  The kernel carries four more — profile, wire, sweep and construct — that
+  this editor does not offer, because each is a *drawing* held in a library
+  on the document rather than a handful of numbers, and MetaMeld has no
+  surface to draw one on. A document written elsewhere that names one still
+  opens, renders and exports here.
 
 Order matters: a Cut only removes what is already there, so shapes added
 after it are untouched — use ▲▼ to move a shape up or down the list.
@@ -447,11 +468,48 @@ rather than appended — a cut only reaches what is above it, so appending
 would drop them below the build-plate cut and leave the copy with no flat
 bottom.
 
+### How big a model can be
+
+There is no limit on the number of shapes. There used to be one — 32 — and
+it was never a fact about documents: it was how many shapes fit in the
+raymarcher's uniform block, enforced by refusing the 33rd shape rather than
+by changing how the model was drawn.
+
+So it changes how the model is drawn instead. Up to what the GPU reports it
+can hold — 96 shapes on a desktop, 48 on a phone, fewer on hardware sitting
+at the floor the standard guarantees — the viewport raymarches, which is the
+picture with the shadows, the ambient occlusion and the selection blue that
+fades across a blend. Past that it meshes the same field, with the same
+surface nets the STL comes out of, and draws the triangles: plainer — no
+blue, no shadows, the selection carried by the wireframe boxes alone — and
+the same cost for four hundred shapes as for four. The shape count reads
+**meshed view** when that is what you are looking at, and the size readout
+says how many triangles at what spacing.
+
+Only the shapes actually being drawn count. Shapes switched off and hidden
+bodies are not in the plan at all, so a large document worked on one body at
+a time keeps the better picture.
+
+The mesh is also what you see **while you orbit** a model small enough to
+raymarch, on hardware that can build it on the GPU. The model is not
+changing while the camera moves, so the triangles are still of what is on
+the screen, and they redraw in about a millisecond where a raymarched frame
+of the same scene costs hundreds. The raymarched picture is back the moment
+the view settles. Dragging a *slider* never gets the mesh — the shape is
+changing under it, and a stand-in that lagged the hand would be worse than a
+slow picture that did not.
+
 ### Getting it out
 
 **Save STL** sweeps the real field on a grid (the resolution slider, 0.5 mm
 by default) and runs the same surface-nets mesher the Python tools use.
-It's evaluated a slice at a time between frames, so the phone stays
+Sweeping the grid is one distance evaluation per corner and is essentially
+the whole cost of an export, so it goes to the GPU where there is one:
+`glmesh.js` compiles the same field into a shader and renders it into a
+float target a slab at a time, which is the same grid the JavaScript loop
+would have written, walked by the same mesher. Where there is no GPU path —
+or the model is past even *that* uniform block — it is evaluated a slice at
+a time between frames, so the phone stays
 responsive and iOS never offers to kill the tab. On iOS the finished file
 goes to the share sheet — Files, AirDrop, or straight into a slicer app.
 Since the build spans several frames iOS has forgotten the tap by the time
@@ -490,7 +548,15 @@ layer. Dragging is unchanged, and so is the cost of it.
 If the number is what matters, though, neither of these is the place to
 read it: **the STL is the truth**, and the Size readout is the loosest of
 the three (it probes a coarse grid and bisects, and reads about 0.2 mm
-under on the ice cream cone).
+under on the ice cream cone — on a coarser grid the more shapes there are,
+since the probe costs grid points times shapes and a readout is not worth
+freezing the panel for).
+
+The meshed view is the one picture that does not disagree with the STL,
+being the same mesher on the same field. It runs at a coarser spacing —
+whatever a grid of about 120 cubed works out to for the model in front of
+it — so it is the *same* surface found less finely, rather than a different
+surface.
 
 ---
 

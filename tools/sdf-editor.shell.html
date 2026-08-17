@@ -261,6 +261,13 @@ addEventListener('unhandledrejection',
 
 <!-- @sinterform -->
 
+<!-- Optional in the strongest sense: the kernel does not import it, does not
+     know it exists, and meshes perfectly well without it. It fills the
+     mesher's sample grid on the GPU rather than in JavaScript, which is the
+     difference between a meshed viewport that keeps up with an edit and one
+     that stops the page for a second. -->
+<!-- @sinterform-glmesh -->
+
 <script>
 "use strict";
 try {
@@ -280,12 +287,26 @@ const SF = SinterForm;
 // shapes into an SSBO would have neither limit, which is why the kernel does
 // not carry these numbers.
 const GL = SinterFormGLSL;
-const MAXN = 32;
+// And the third module, which is optional: it fills the mesher's sample grid
+// on the GPU. Everything works without it, more slowly.
+const GM = typeof SinterGLMesh !== 'undefined' ? SinterGLMesh : null;
 const MAXFIELDS = 4;
-const { PRIMS, PRIM_KEYS, OPS, RAD, dimIsLength, dimUnit,
+// There is no MAXN here any more. How many shapes fit in a uniform block is
+// still ours to know, but it is not a constant and it is not a rule about
+// documents: it is read off the driver below, and a model past it is *drawn*
+// differently rather than refused. See "two ways to draw it".
+const { PRIMS, PRIM_KEYS, OPS, RAD, dimIsLength, dimUnit, roundSlot,
         decodeField, encodeField, sampleField,
         smin, smax, invRot,
         sceneSDF, sceneBounds, surfaceNets, meshToSTL } = SF;
+
+// `baked` on a primitive means its shape is not in the node: it lives in a
+// library on the document and the node's `fi` says which entry. The kernel
+// marks its profile, wire, sweep and construct that way too, so where this
+// editor means a baked *field* — the only one of them it can author, and the
+// only one whose `fi` is a texture unit — it says so rather than asking
+// whether the primitive is baked.
+const isField = n => n && n.t === 'field';
 
 // ======================================================================
 // document / state
@@ -639,9 +660,14 @@ function undo() {
   if (typeof d.activeBody === 'number') activeBody = d.activeBody;
   syncBodies(); resetPicked();
   document.getElementById('undoBtn').disabled = !undoStack.length;
-  rebuildShader(); renderList(); save(); needDraw();
+  sceneChanged(); renderList(); save(); needDraw();
 }
+// Every edit ends here — that is what makes this the one place the meshed
+// view can be invalidated from without hunting down each mutation. A camera
+// move or a resize never saves, which is exactly the distinction the mesh
+// cares about: the model changed, so the triangles are of something else.
 function save() {
+  dropMesh();
   try { localStorage.setItem(STORE, JSON.stringify(
       { nodes, bodies, sel, activeBody,
         fields: SF.fields.length ? SF.fields.map(encodeField) : undefined })); }
@@ -654,8 +680,7 @@ function save() {
 function adopt(doc) {
   const list = (doc && (doc.nodes || doc)) || [];
   if (!Array.isArray(list)) return false;
-  const kept = list.filter(n => n && PRIMS[n.t]).slice(0, MAXN)
-                   .map(n => makeNode(n.t, n));
+  const kept = list.filter(n => n && PRIMS[n.t]).map(n => makeNode(n.t, n));
   if (!kept.length) return false;
   // Baked fields, decoded before anything else is committed: a corrupt one
   // should fail the load, not half-apply it. `field` (singular) is the shape
@@ -677,8 +702,8 @@ function adopt(doc) {
   for (const n of nodes) {
     if (typeof n.b !== 'number') n.b = 0;
     if (typeof n.fi !== 'number') n.fi = 0;
-    if (PRIMS[n.t].baked) n.fi = Math.min(Math.max(n.fi, 0),
-                                          Math.max(SF.fields.length - 1, 0));
+    if (isField(n)) n.fi = Math.min(Math.max(n.fi, 0),
+                                    Math.max(SF.fields.length - 1, 0));
     if (n.op === 'add') n.tg = null;
     else if (n.tg && !Array.isArray(n.tg)) n.tg = null;
     if (Array.isArray(n.tg)) n.tg = n.tg.filter(id => typeof id === 'number');
@@ -707,14 +732,44 @@ if (!load()) {
 }
 
 // ======================================================================
-// WebGL2 raymarcher
+// WebGL2 — two ways to draw it
 // ======================================================================
+// The raymarcher runs the kernel's GLSL per pixel: shadows, ambient
+// occlusion, the selection blue mixed across a blend with the same weight the
+// distance is. It is the better picture and it is the one this editor is for.
+// What it cannot do is scale — every shape in the scene is unrolled into
+// `map()`, and `map()` runs a few hundred times per ray.
+//
+// So there is a second path: mesh the same field with the kernel's own
+// surface nets and draw the triangles. Its cost is in the *build*, once per
+// edit, and then it draws for nothing however many shapes went into it. That
+// makes it the right picture in two places — for a model past what the
+// marcher's uniforms hold, and as a stand-in while the camera is moving,
+// where the shape is not changing and only the view is.
 const canvas = document.getElementById('view');
 const gl = canvas.getContext('webgl2', { antialias: false, alpha: false });
 if (!gl) {
   showErr('WebGL2 is not available — on iPhone use Safari or Chrome, iOS 15+');
   throw new Error('no webgl2');
 }
+
+// ---------- what this GPU can hold ----------
+// Three vec4 per shape, plus the camera, the tints and the tolerances. What
+// is left of the fragment uniform block after those is how many shapes can be
+// handed to a shader at once — a number the driver reports rather than one to
+// guess at. GLES 3.0 guarantees 224 vectors and a desktop typically has 1024,
+// so this is between 69 and 336 shapes where the old constant said 32.
+const UNI = gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS) || 224;
+const SLOTS = Math.max(8, Math.floor((UNI - 16) / 3));
+// glmesh compiles the same map() with none of the shading around it, so it
+// gets the whole allowance. Past this the grid is filled in JavaScript
+// instead — slower, same answer, and no ceiling.
+const GPU_N = SLOTS;
+// The marcher stops short of the uniforms, and deliberately. Fitting is not
+// the same as being worth drawing: a hundred shapes unrolled into a loop that
+// runs 260 times a ray is a slideshow, while the mesh of the same model draws
+// in a millisecond. This is where the cheaper of the two changes hands.
+const RAY_N = Math.min(SLOTS, matchMedia('(pointer: coarse)').matches ? 48 : 96);
 function compile(type, src) {
   const s = gl.createShader(type);
   gl.shaderSource(s, src); gl.compileShader(s);
@@ -737,7 +792,19 @@ const QUAD_VS =
 'const vec2 v[3] = vec2[3](vec2(-1.,-1.), vec2(3.,-1.), vec2(-1.,3.));\n' +
 'void main(){ gl_Position = vec4(v[gl_VertexID], 0.0, 1.0); }';
 
-function fragSource(mapBody) {
+// The libraries a slotted primitive's shape comes out of. This editor can
+// author only one of the four — baked fields — but a document written
+// elsewhere can name any of them, and `slotList` hands back the primitive's
+// own default for a slot nothing has filled, so an unknown one draws a shape
+// rather than failing to compile.
+const slotsFor = plan => ({
+  profile: SF.slotList('profile', SF.profiles, GL.maxSlot(plan, 'profile')),
+  wire: SF.slotList('wire', SF.wires, GL.maxSlot(plan, 'wire')),
+  sweep: SF.slotList('sweep', SF.sweeps, GL.maxSlot(plan, 'sweep')),
+  construct: SF.slotList('construct', SF.constructs, GL.maxSlot(plan, 'construct'))
+});
+
+function fragSource(plan, mapBody) {
   return `#version 300 es
 precision highp float;
 out vec4 frag;
@@ -745,7 +812,7 @@ uniform vec2 uRes;
 uniform vec3 uEye;
 uniform mat3 uCam;          // columns: right, up, forward
 uniform float uFocal;
-uniform vec4 uD[${MAXN * 3}];
+uniform vec4 uD[${SLOTS * 3}];
 uniform vec3 uTint;
 uniform vec3 uSelTint;
 // x*t + y: how close a ray has to get before it counts as a hit. Sphere
@@ -754,10 +821,14 @@ uniform vec3 uSelTint;
 // is down, tight once the view settles.
 uniform vec2 uHit;
 ${GL.samplerDecls(MAXFIELDS).trimEnd()}
+${GL.foldSource()}
 
 // How much of the *accumulated* side survives a smin/smax. The colour has to
 // be mixed with the same weight the distance is, or the blue would sit off
 // the blend instead of fading across it. Set by map(), read after the hit.
+// These are the folds' twins and have to be kept in step with them by hand:
+// smin's h, and smax's, which is smin's with the sign of the difference
+// turned round.
 float gSel;
 float wmin(float a, float b, float k){
   return (k <= 0.0) ? ((a < b) ? 1.0 : 0.0)
@@ -767,25 +838,8 @@ float wmax(float a, float b, float k){
   return (k <= 0.0) ? ((a > b) ? 1.0 : 0.0)
                     : clamp(0.5 - 0.5*(b - a)/k, 0.0, 1.0);
 }
-
-float smin(float a, float b, float k){
-  if (k <= 0.0) return min(a, b);
-  float h = clamp(0.5 + 0.5*(b - a)/k, 0.0, 1.0);
-  return mix(b, a, h) - k*h*(1.0 - h);
-}
-float smax(float a, float b, float k){
-  if (k <= 0.0) return max(a, b);
-  float h = clamp(0.5 - 0.5*(b - a)/k, 0.0, 1.0);
-  return mix(b, a, h) + k*h*(1.0 - h);
-}
-vec3 invRot(vec3 p, vec3 e){
-  float c, s; vec3 q = p;
-  c = cos(e.z); s = sin(e.z); q = vec3( c*q.x + s*q.y, -s*q.x + c*q.y, q.z);
-  c = cos(e.y); s = sin(e.y); q = vec3( c*q.x - s*q.z, q.y, s*q.x + c*q.z);
-  c = cos(e.x); s = sin(e.x); q = vec3( q.x, c*q.y + s*q.z, -s*q.y + c*q.z);
-  return q;
-}
 ${GL.library(PRIM_KEYS)}
+${GL.slotBlock(plan, slotsFor(plan))}
 
 float map(vec3 P){
   float d = 1e9, dB, di, w, sw = 0.0, swB = 0.0; vec3 q;
@@ -896,20 +950,41 @@ gl.bindVertexArray(null);
 
 const emptyVAO = gl.createVertexArray();
 let prog = null, U = {};
-const uData = new Float32Array(MAXN * 12);
+// Which uniform slot each shape's data goes in, for whatever was last
+// compiled. Empty when the model is past RAY_N and no shader was built.
+let slotAt = new Map();
+let rayFits = true;
+const uData = new Float32Array(SLOTS * 12);
 
-function rebuildShader() {
+// The *structure* of the model changed: which shapes exist, what type or
+// operation they are, which body they build or cut, whether they are mirrored.
+// Values — a position, a radius, a blend — do not come through here, because
+// they only move uniforms and the compiled shader already reads those.
+function sceneChanged() {
+  dropMesh();
+  const plan = buildPlan(nodes);
+  // Slots are per *shape*, not per appearance: a cut aimed at three bodies is
+  // emitted three times in map() and packed once.
+  const at = new Map();
+  for (const part of plan)
+    for (const n of part.nodes) if (!at.has(n)) at.set(n, at.size);
+  slotAt = at;
+  rayFits = at.size <= RAY_N;
+  if (!rayFits) {
+    // Nothing to compile — the mesh is the picture now. The old program goes
+    // back to the driver rather than sitting there holding a model it cannot
+    // draw.
+    if (prog) { gl.deleteProgram(prog); prog = null; }
+    errbar.style.display = 'none';
+    scheduleProxy();
+    return;
+  }
   let body = '';
-  const used = nodes.slice(0, MAXN);
-  // uniform slots stay keyed to a shape's index in `nodes`, so a shape that
-  // several bodies cut is emitted several times but packed only once
-  const slot = new Map();
-  used.forEach((n, i) => slot.set(n, i));
-  buildPlan(used).forEach(part => {
+  for (const part of plan) {
     body += '  dB = 1e9; swB = 0.0;\n';
-    part.nodes.forEach(n => {
-      const i = slot.get(n);
-      if (i === undefined) return;
+    for (const n of part.nodes) {
+      const i = at.get(n);
+      if (i === undefined) continue;
       const b = 3 * i;
       body += '  q = P;\n';
       // mirror the *world* point, so a shape at x = 20 also appears at x = -20
@@ -917,10 +992,14 @@ function rebuildShader() {
       if (n.my) body += '  q.y = abs(q.y);\n';
       if (n.mz) body += '  q.z = abs(q.z);\n';
       body += `  q = invRot(q - uD[${b}].xyz, uD[${b + 1}].xyz);\n`;
-      // GL.call knows the sampler-first calling convention for baked
-      // primitives, so this no longer has to.
-      body += `  di = ${GL.call(n.t, 'q', `uD[${b + 2}].xyz`, `uD[${b + 1}].w`,
-                    Math.min(Math.max(n.fi || 0, 0), MAXFIELDS - 1))};\n`;
+      // GL.call knows the sampler-first calling convention for a baked field
+      // and the slot-in-the-name convention for a compiled outline, so this
+      // no longer has to. Only a field's slot is a texture unit and only a
+      // field's is clamped to the texture budget.
+      const fi = isField(n) ? Math.min(Math.max(n.fi || 0, 0), MAXFIELDS - 1)
+                            : Math.max(n.fi || 0, 0);
+      body += `  di = ${GL.call(n.t, 'q', `uD[${b + 2}].xyz`,
+                                `uD[${b + 1}].w`, fi)};\n`;
       // weight first, then the distance: wmin/wmax need the pre-blend dB
       if (n.op === 'add') {
         body += `  w = wmin(dB, di, uD[${b}].w);\n`;
@@ -933,22 +1012,24 @@ function rebuildShader() {
         body += `  dB = smax(dB, di, uD[${b}].w);\n`;
       }
       body += `  swB = mix(uD[${b + 2}].w, swB, w);\n`;
-    });
+    }
     // plain min: bodies must not blend, so the colour switches rather than fades
     body += '  if (dB < d) { d = dB; sw = swB; }\n';
-  });
+  }
   if (!body) body = '  d = 1e9;\n';
   let np;
-  try { np = makeProgram(QUAD_VS, fragSource(body)); }
+  try { np = makeProgram(QUAD_VS, fragSource(plan, body)); }
   catch (e) { showErr(String(e.message).slice(0, 200)); return; }
   if (prog) gl.deleteProgram(prog);
   prog = np;
   U = {};
-  for (const k of ['uRes', 'uEye', 'uCam', 'uFocal', 'uTint', 'uSelTint', 'uHit',
-                 'uField0', 'uField1', 'uField2', 'uField3'])
+  for (const k of ['uRes', 'uEye', 'uCam', 'uFocal', 'uTint', 'uSelTint', 'uHit'])
     U[k] = gl.getUniformLocation(prog, k);
+  for (let i = 0; i < MAXFIELDS; i++)
+    U['uField' + i] = gl.getUniformLocation(prog, 'uField' + i);
   U.uD = gl.getUniformLocation(prog, 'uD[0]');
   errbar.style.display = 'none';
+  scheduleProxy();
 }
 
 // The field as a 3D texture, uploaded once and left on unit 0. A scene with
@@ -988,18 +1069,152 @@ function bindField() {
 }
 
 function packUniforms() {
-  uData.fill(0);
-  nodes.slice(0, MAXN).forEach((n, i) => {
-    const b = 12 * i;
-    uData[b] = n.p[0]; uData[b + 1] = n.p[1]; uData[b + 2] = n.p[2];
-    uData[b + 3] = Math.max(n.k, 0);
-    uData[b + 4] = n.r[0] * Math.PI / 180;
-    uData[b + 5] = n.r[1] * Math.PI / 180;
-    uData[b + 6] = n.r[2] * Math.PI / 180;
-    uData[b + 7] = n.round || 0;
-    uData[b + 8] = n.d[0]; uData[b + 9] = n.d[1]; uData[b + 10] = n.d[2];
-    uData[b + 11] = picked.has(n) ? 1 : 0;   // spare slot: drives the blue
-  });
+  // Three vec4 a shape, in a fixed order, is a contract between the source
+  // glsl.js generated and whoever fills the array — so it is filled by the
+  // same file rather than written out a second time here. That includes the
+  // rule that a baked field takes its sample *range* through the slot every
+  // other primitive uses for corner rounding: pack `round` there by hand and
+  // the field comes out multiplied by zero, which draws as its bounding box
+  // and looks exactly like a texture that never arrived.
+  GL.packPlan(slotAt, { maxN: SLOTS, roundSlot, into: uData });
+  // The twelfth float is the one the kernel has no opinion about. It drives
+  // the blue.
+  for (const [n, i] of slotAt) uData[12 * i + 11] = picked.has(n) ? 1 : 0;
+}
+
+// ======================================================================
+// the meshed view
+// ======================================================================
+// The same field, found the other way: sampled on a grid and walked into
+// triangles by the kernel's surface nets — the same mesher the STL comes out
+// of, at a coarser spacing. Once built it draws as a vertex buffer, which
+// costs the same for four hundred shapes as for four.
+//
+// Plain by design. It has no selection blue, because a triangle does not know
+// which shape it came from and the wireframe boxes already say what is picked;
+// no shadows and no ambient occlusion, because those are ray queries against a
+// field this path does not have. What it does have is the outline, and the
+// outline is the thing you are modelling.
+const MESH_VS = `#version 300 es
+layout(location=0) in vec3 aP;
+layout(location=1) in vec3 aN;
+uniform mat4 uMVP;
+out vec3 vN; out vec3 vW;
+void main(){ vN = aN; vW = aP; gl_Position = uMVP*vec4(aP, 1.0); }`;
+const MESH_FS = `#version 300 es
+precision highp float;
+in vec3 vN; in vec3 vW; out vec4 frag;
+uniform vec3 uTint; uniform vec3 uEye;
+void main(){
+  vec3 n = normalize(vN);
+  vec3 L1 = normalize(vec3(0.42, -0.5, 0.76));
+  vec3 L2 = normalize(vec3(-0.6, 0.55, 0.25));
+  // the marcher's lighting with its two ray queries replaced by their
+  // averages, so switching between the pictures is not a change of scene
+  float dif = max(dot(n, L1), 0.0)*0.78*0.80 + max(dot(n, L2), 0.0)*0.22;
+  vec3 V = normalize(uEye - vW);
+  float spec = pow(max(dot(n, normalize(L1 + V)), 0.0), 40.0)*0.35;
+  float amb = (0.30 + 0.12*n.z)*0.85;
+  frag = vec4(pow(uTint*(amb + dif) + vec3(spec), vec3(0.62)), 1.0);
+}`;
+
+let meshProg = null, meshU = {}, meshVao = null, meshBufs = [], meshCount = 0;
+let meshStale = true, meshTris = 0, meshMs = 0, meshRes = 0, meshOn = '';
+
+// Marks the triangles as being of a different model. Called from save(), which
+// every edit ends with — see the note there.
+function dropMesh() { meshStale = true; }
+
+function freeMesh() {
+  if (meshVao) gl.deleteVertexArray(meshVao);
+  for (const b of meshBufs) gl.deleteBuffer(b);
+  meshVao = null; meshBufs = []; meshCount = 0;
+}
+
+// glmesh fills the grid by compiling the same map() and rendering it into a
+// float target: one SDF evaluation per corner, which is essentially all of the
+// cost of meshing, done on the hardware that is good at it. Resolved once,
+// because asking makes a context.
+let gpuSample;
+function sampler() {
+  if (gpuSample === undefined)
+    gpuSample = (GM && GM.available(gl))
+      ? GM.sampler({ gl, maxN: GPU_N, maxFields: MAXFIELDS }) : null;
+  return gpuSample;
+}
+const planCount = plan => {
+  const seen = new Set();
+  for (const part of plan) for (const n of part.nodes) seen.add(n);
+  return seen.size;
+};
+
+// Grid spacing for a picture, which is a different question from the STL's.
+// Here the answer wanted is "as fine as a few milliseconds buys", so it comes
+// from a sample budget and the model's own size rather than from the export
+// slider. On the GPU that is a grid around 120 cubed; in JavaScript it has to
+// be an order of magnitude coarser, and the picture says so by looking it.
+const VIEW_SAMPLES = matchMedia('(pointer: coarse)').matches ? 6e5 : 1.6e6;
+function viewRes(B) {
+  const vol = [0, 1, 2].reduce((a, i) => a * Math.max(B.hi[i] - B.lo[i], 1), 1);
+  const budget = sampler() ? VIEW_SAMPLES : 1.5e5;
+  return Math.min(Math.max(Math.cbrt(vol / budget), 0.25), 8);
+}
+
+function buildMesh() {
+  const t0 = Date.now();
+  // whatever happens below, do not come back and try it again next frame
+  meshStale = false;
+  const plan = buildPlan(nodes);
+  const B = sceneBounds(shownNodes());
+  if (!B || !plan.length) { freeMesh(); meshTris = 0; return; }
+  const res = viewRes(B);
+  // Past the GPU's uniform block there is no shader to fill the grid with, so
+  // the kernel's own JavaScript does it. Slower by a lot; the same answer.
+  const use = sampler() && planCount(plan) <= GPU_N ? sampler() : null;
+  let m = null;
+  try { m = SF.mesh(plan, { res, bounds: B, sample: use, maxSamples: 8e6 }); }
+  catch (e) { freeMesh(); meshTris = 0; showErr('view: ' + e.message); return; }
+  if (!m || !m.indices.length) { freeMesh(); meshTris = 0; return; }
+
+  const P = m.positions, I = m.indices;
+  const N = new Float32Array(P.length);
+  for (let t = 0; t < I.length; t += 3) {
+    const a = 3 * I[t], b = 3 * I[t + 1], c = 3 * I[t + 2];
+    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
+    const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    for (const o of [a, b, c]) { N[o] += nx; N[o + 1] += ny; N[o + 2] += nz; }
+  }
+  if (!meshProg) {
+    meshProg = makeProgram(MESH_VS, MESH_FS);
+    for (const k of ['uMVP', 'uTint', 'uEye'])
+      meshU[k] = gl.getUniformLocation(meshProg, k);
+  }
+  // The last mesh's buffers go back to the driver first. An edit rebuilds this
+  // every time the view settles, and a vertex array and three buffers apiece
+  // is real memory that nothing else was ever going to reclaim.
+  freeMesh();
+  meshVao = gl.createVertexArray();
+  gl.bindVertexArray(meshVao);
+  const put = (data, loc) => {
+    const buf = gl.createBuffer();
+    meshBufs.push(buf);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0);
+  };
+  put(P, 0); put(N, 1);
+  const eb = gl.createBuffer();
+  meshBufs.push(eb);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, eb);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, I, gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  meshCount = I.length;
+  meshTris = I.length / 3;
+  meshRes = res;
+  meshOn = use ? 'GPU' : 'JS';
+  meshMs = Date.now() - t0;
 }
 
 // ---------- camera ----------
@@ -1130,31 +1345,110 @@ function selectionOutlines() {
   return out;
 }
 
-// ---------- draw loop: full res when idle, coarse while a finger is down ----
-let pending = false, interacting = false, idleTimer = 0;
+// The build plate, drawn as lines because the meshed view has no shader to
+// draw it in. The marcher keeps its own, which fades with distance and takes
+// the model's shadow — neither of which this can do.
+let gridCache = null;
+function plateGrid() {
+  const B = sceneBounds(shownNodes());
+  const reach = B ? Math.max(...[0, 1].map(a =>
+    Math.max(Math.abs(B.lo[a]), Math.abs(B.hi[a])))) : 60;
+  const half = Math.max(Math.ceil(reach / 50) * 50, 100);
+  if (gridCache && gridCache.half === half) return gridCache.data;
+  const out = [];
+  for (let v = -half; v <= half; v += 10) {
+    out.push(-half, v, 0, half, v, 0);
+    out.push(v, -half, 0, v, half, 0);
+  }
+  gridCache = { half, data: new Float32Array(out) };
+  return gridCache.data;
+}
+
+// ---------- draw loop ----------
+// Full resolution when idle, coarse while a finger is down — and, since there
+// are two pictures now, whichever of them can be had for the frame.
+//
+// Two costs three orders of magnitude apart, and the scheduling follows from
+// how far apart they are. A meshed frame is a buffer draw; a raymarched frame
+// pays for every shape in the model on every pixel. Meshing costs about what
+// one raymarched frame costs — the grid fill runs the same map() over a
+// comparable number of points — so a mesh pays for itself on the second frame
+// of any drag.
+let pending = false, interacting = false, camMoving = false;
+let idleTimer = 0, proxyTimer = 0;
 function needDraw() {
   if (pending) return;
   pending = true;
   requestAnimationFrame(draw);
 }
-function markInteracting() {
+// `isCamera` is the whole distinction the proxy rests on. A camera move leaves
+// the model alone, so a mesh built before it is still a mesh of what is on the
+// screen. A slider move does not, and standing a mesh of the previous shape in
+// front of the marcher would show the model not following the hand.
+function markInteracting(isCamera) {
   interacting = true;
+  camMoving = !!isCamera;
   clearTimeout(idleTimer);
-  idleTimer = setTimeout(() => { interacting = false; needDraw(); }, 180);
+  clearTimeout(proxyTimer);
+  idleTimer = setTimeout(settle, 180);
   needDraw();
 }
+function settle() {
+  interacting = false;
+  needDraw();
+  scheduleProxy();
+}
+// Once the settled picture is up, pay for the mesh that the next drag will
+// stand in front of. Two conditions on that, and both are about it being a
+// saving rather than a habit: the grid fill has to be on the GPU, since
+// meshing in JavaScript costs more than the frames it would save, and the
+// scene has to be big enough for a raymarched frame to be worth avoiding. A
+// four-shape model already draws in a millisecond, and meshing it every time
+// a slider is let go would be pure overhead.
+//
+// Called from the end of an interaction and from a structural change, so the
+// first orbit after opening a document has a mesh to use rather than the
+// second.
+function scheduleProxy() {
+  clearTimeout(proxyTimer);
+  proxyTimer = setTimeout(() => {
+    if (interacting || !meshStale) return;
+    if (!rayFits || (sampler() && slotAt.size >= 8)) {
+      buildMesh(); needDraw(); scheduleInfo();
+    }
+  }, 140);
+}
+
 function draw() {
   pending = false;
-  if (!prog) return;
+  // What can be drawn this frame, which is not always what the model would
+  // prefer. A stale mesh is a fine stand-in while the camera moves — it is
+  // only a stand-in — but never while the model itself is changing.
+  const proxy = rayFits && interacting && camMoving && meshCount && !meshStale;
+  const meshed = !rayFits || proxy;
+  // Past the marcher's budget the mesh is the only picture there is, so it
+  // gets built here when it has to be, on a frame a raymarch would have cost
+  // about as much anyway. Not while an edit is still in flight, though: the
+  // next pointer event would throw it away.
+  if (!rayFits && meshStale && (!interacting || !meshCount)) buildMesh();
+  if (!meshed && !prog) return;
+
   const dpr = Math.min(devicePixelRatio || 1, 2);
-  const scale = interacting ? 0.55 : 1;
+  // Dropping the render scale is a raymarch trick — it is the per-pixel cost
+  // that hurts. A mesh is cheap enough to draw full size with a finger down.
+  const scale = (interacting && !meshed) ? 0.55 : 1;
   const cw = canvas.clientWidth || innerWidth, ch = canvas.clientHeight || innerHeight;
   const w = Math.max(1, Math.round(cw * dpr * scale));
   const h = Math.max(1, Math.round(ch * dpr * scale));
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
   gl.viewport(0, 0, w, h);
-  gl.disable(gl.DEPTH_TEST);
 
+  if (meshed) drawMeshed(w, h); else drawMarched(w, h);
+  drawOverlay(w, h, meshed);
+}
+
+function drawMarched(w, h) {
+  gl.disable(gl.DEPTH_TEST);
   const { eye, r, u, f } = camBasis();
   packUniforms();
   gl.useProgram(prog);
@@ -1172,16 +1466,48 @@ function draw() {
   gl.uniform4fv(U.uD, uData);
   gl.bindVertexArray(emptyVAO);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.bindVertexArray(null);
+}
 
+function drawMeshed(w, h) {
+  gl.enable(gl.DEPTH_TEST);
+  gl.clearColor(0.071, 0.086, 0.104, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  if (!meshCount) return;
+  const { eye } = camBasis();
+  gl.useProgram(meshProg);
+  gl.uniformMatrix4fv(meshU.uMVP, false, mvpMatrix(w / h));
+  gl.uniform3f(meshU.uTint, 0.91, 0.53, 0.22);
+  gl.uniform3f(meshU.uEye, eye[0], eye[1], eye[2]);
+  gl.bindVertexArray(meshVao);
+  gl.drawElements(gl.TRIANGLES, meshCount, gl.UNSIGNED_INT, 0);
+  gl.bindVertexArray(null);
+}
+
+// One box per selected shape, in both pictures — which is what carries the
+// selection when the meshed one cannot colour it.
+function drawOverlay(w, h, meshed) {
   const lines = selectionOutlines();
+  const grid = meshed ? plateGrid() : null;
+  if (!lines && !grid) return;
+  gl.useProgram(lineProg);
+  gl.bindVertexArray(lineVAO);
+  gl.bindBuffer(gl.ARRAY_BUFFER, lineBuf);
+  gl.uniformMatrix4fv(gl.getUniformLocation(lineProg, 'uMVP'), false,
+                      mvpMatrix(w / h));
+  const uC = gl.getUniformLocation(lineProg, 'uC');
+  if (grid) {
+    // the plate is *behind* things, so it is the one overlay that keeps its
+    // depth test
+    gl.enable(gl.DEPTH_TEST);
+    gl.bufferData(gl.ARRAY_BUFFER, grid, gl.DYNAMIC_DRAW);
+    gl.uniform3f(uC, 0.17, 0.21, 0.26);
+    gl.drawArrays(gl.LINES, 0, grid.length / 3);
+  }
   if (lines && lines.length) {
-    gl.useProgram(lineProg);
-    gl.bindVertexArray(lineVAO);
-    gl.bindBuffer(gl.ARRAY_BUFFER, lineBuf);
+    gl.disable(gl.DEPTH_TEST);
     gl.bufferData(gl.ARRAY_BUFFER, lines, gl.DYNAMIC_DRAW);
-    gl.uniformMatrix4fv(gl.getUniformLocation(lineProg, 'uMVP'), false,
-                        mvpMatrix(w / h));
-    gl.uniform3f(gl.getUniformLocation(lineProg, 'uC'), 0.37, 0.78, 0.94);
+    gl.uniform3f(uC, 0.37, 0.78, 0.94);
     gl.drawArrays(gl.LINES, 0, lines.length / 3);
   }
   gl.bindVertexArray(null);
@@ -1219,11 +1545,15 @@ canvas.addEventListener('pointermove', e => {
   if (!pts.has(e.pointerId)) return;
   pts.set(e.pointerId, [e.clientX, e.clientY]);
   const P = [...pts.values()];
+  // Move mode drags the shape, not the view — so the frame it asks for is not
+  // one a mesh of the previous shape may stand in for.
+  let camera = true;
   if (P.length === 1 && last1) {
     const dx = e.clientX - last1[0], dy = e.clientY - last1[1];
     last1 = [e.clientX, e.clientY];
     if (mode === 'grab') {
       const { r, u, s } = screenAxes();
+      camera = false;
       moveSelected((r[0] * dx - u[0] * dy) * s, (r[1] * dx - u[1] * dy) * s,
                    (r[2] * dx - u[2] * dy) * s);
     } else {
@@ -1239,6 +1569,7 @@ canvas.addEventListener('pointermove', e => {
       const { r, u, s } = screenAxes();
       if (mode === 'grab' && picked.size) {
         // two fingers in Move mode raise/lower along the build direction
+        camera = false;
         moveSelected(0, 0, -dy * s);
       } else {
         cam.tgt[0] -= (r[0] * dx - u[0] * dy) * s;
@@ -1248,21 +1579,21 @@ canvas.addEventListener('pointermove', e => {
     }
     lastPinch = d; lastMid = mid;
   }
-  markInteracting();
+  markInteracting(camera);
 });
 function endPtr(e) {
   pts.delete(e.pointerId);
   const P = [...pts.values()];
   last1 = P.length === 1 ? P[0] : null;
   if (P.length < 2) { lastPinch = 0; lastMid = null; }
-  markInteracting();
+  markInteracting(true);
 }
 canvas.addEventListener('pointerup', endPtr);
 canvas.addEventListener('pointercancel', endPtr);
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
   cam.dist = Math.min(Math.max(cam.dist * Math.exp(e.deltaY * 0.0012), 8), 2000);
-  markInteracting();
+  markInteracting(true);
 }, { passive: false });
 // iOS fires these on double-tap zoom attempts over the canvas
 document.addEventListener('gesturestart', e => e.preventDefault());
@@ -1307,7 +1638,7 @@ function renderBaked() {
   const box = $('baked');
   box.innerHTML = '';
   SF.fields.forEach((f, i) => {
-    const used = nodes.filter(n => PRIMS[n.t].baked && n.fi === i).length;
+    const used = nodes.filter(n => isField(n) && n.fi === i).length;
     const el = document.createElement('div');
     el.className = 'node body' + (i === activeField ? ' sel' : '');
     el.innerHTML =
@@ -1319,10 +1650,12 @@ function renderBaked() {
     el.onclick = ev => {
       const act = ev.target.dataset && ev.target.dataset.act;
       if (act === 'place') {
-        if (nodes.length >= MAXN) { showErr('Shape limit is ' + MAXN); return; }
         snapshot();
+        // No `round`: the kernel takes a field's sample range through that
+        // slot itself, off the library entry, so writing it onto the node
+        // would only be a second copy that the next rename could not fix.
         const c = makeNode('field', { fi: i, b: activeBody, p: [0, 0, f.box[2]],
-                                      d: f.box.slice(), round: f.range });
+                                      d: f.box.slice() });
         nodes.push(c);
         sel = nodes.length - 1; picked = new Set([c]);
       } else if (act === 'rename') {
@@ -1334,10 +1667,10 @@ function renderBaked() {
         SF.fields.splice(i, 1);
         // instances after it shift down with it
         for (const n of nodes)
-          if (PRIMS[n.t].baked && n.fi > i) n.fi--;
+          if (isField(n) && n.fi > i) n.fi--;
         activeField = Math.max(0, Math.min(activeField, SF.fields.length - 1));
       } else activeField = i;
-      rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+      sceneChanged(); renderList(); renderInspector(); save(); needDraw();
     };
     box.appendChild(el);
   });
@@ -1382,12 +1715,12 @@ $('bakeBtn').onclick = () => {
     const gone = new Set(nodes.filter(spent));
     nodes = nodes.filter(n => !gone.has(n));
     const c = makeNode('field', { fi: r.fi, b: id, p: r.centre,
-                                  d: r.box.slice(), round: r.range });
+                                  d: r.box.slice() });
     nodes.push(c);
     sel = nodes.indexOf(c); picked = new Set([c]);
     activeField = r.fi;
     syncBodies(); syncPicked();
-    rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+    sceneChanged(); renderList(); renderInspector(); save(); needDraw();
   } catch (e) { undo(); showErr('bake: ' + e.message); }
 };
 
@@ -1427,7 +1760,7 @@ function renderBodies() {
         activeBody = b.id;
         pickBody(b.id);
       }
-      rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+      sceneChanged(); renderList(); renderInspector(); save(); needDraw();
     };
     box.appendChild(el);
   });
@@ -1486,13 +1819,13 @@ function renderList() {
       `<button class="ic" data-act="down">▼</button>`;
     el.onclick = ev => {
       const act = ev.target.dataset && ev.target.dataset.act;
-      if (act === 'on') { snapshot(); n.on = !n.on; rebuildShader(); }
+      if (act === 'on') { snapshot(); n.on = !n.on; sceneChanged(); }
       else if (act === 'up' && i > 0) {
         snapshot(); nodes.splice(i - 1, 0, nodes.splice(i, 1)[0]);
-        sel = i - 1; rebuildShader();
+        sel = i - 1; sceneChanged();
       } else if (act === 'down' && i < nodes.length - 1) {
         snapshot(); nodes.splice(i + 1, 0, nodes.splice(i, 1)[0]);
-        sel = i + 1; rebuildShader();
+        sel = i + 1; sceneChanged();
       } else {
         // picking a shape also moves you into its body, so the next shape you
         // add lands where you are looking
@@ -1502,7 +1835,9 @@ function renderList() {
     };
     box.appendChild(el);
   });
-  $('nodeCount').textContent = nodes.length + '/' + MAXN;
+  // A count, not a ration. This used to read "17/32", and the 32 in it was
+  // this GPU's uniform block leaking into the document.
+  $('nodeCount').textContent = nodes.length + (rayFits ? '' : ' · meshed view');
   $('selHint').textContent = picked.size > 1
     ? picked.size + ' selected · Place moves and turns them as one'
     : picked.size ? '1 selected'
@@ -1534,7 +1869,7 @@ function sliderRow(label, unit, get, set, min, max, step) {
     set(Math.min(Math.max(v, min), max));
     show(); save(); needDraw(); scheduleInfo();
   };
-  inp.addEventListener('input', () => { commit(parseFloat(inp.value)); markInteracting(); });
+  inp.addEventListener('input', () => { commit(parseFloat(inp.value)); markInteracting(false); });
   inp.addEventListener('change', () => { touched = false; needDraw(); });
   const bump = s => () => {
     // round to the step grid, then to 4 places so 0.1 steps stay 0.1
@@ -1571,7 +1906,7 @@ function chip(text, on, fn) {
   b.onclick = () => {
     snapshot(); fn();
     syncBodies();
-    rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+    sceneChanged(); renderList(); renderInspector(); save(); needDraw();
   };
   return b;
 }
@@ -1643,7 +1978,12 @@ function renderInspector() {
   typeRow.className = 'row';
   typeRow.innerHTML = '<label><span>Type</span></label>';
   const selEl = document.createElement('select');
-  PRIM_KEYS.forEach(k => {
+  // What can be turned into, plus whatever this shape already is — a document
+  // may carry a primitive this editor would not offer to make, and the type
+  // row has to be able to name it.
+  const types = offered();
+  if (!types.includes(n.t)) types.push(n.t);
+  types.forEach(k => {
     const o = document.createElement('option');
     o.value = k; o.textContent = PRIMS[k].name; o.selected = k === n.t;
     selEl.appendChild(o);
@@ -1652,7 +1992,7 @@ function renderInspector() {
     snapshot();
     n.t = selEl.value;
     n.d = PRIMS[n.t].def.slice();
-    rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+    sceneChanged(); renderList(); renderInspector(); save(); needDraw();
   };
   typeRow.appendChild(selEl);
   host.appendChild(typeRow);
@@ -1670,7 +2010,7 @@ function renderInspector() {
     b.onclick = () => {
       snapshot(); n.op = k;
       syncBodies();   // an add turned into a cut can strand its old body
-      rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+      sceneChanged(); renderList(); renderInspector(); save(); needDraw();
     };
     seg.appendChild(b);
   });
@@ -1730,7 +2070,7 @@ function renderInspector() {
     b.textContent = 'Mirror ' + lbl;
     b.onclick = () => {
       snapshot(); n[key] = !n[key];
-      rebuildShader(); renderInspector(); save(); needDraw();
+      sceneChanged(); renderInspector(); save(); needDraw();
     };
     tg.appendChild(b);
   });
@@ -1742,14 +2082,21 @@ function renderInspector() {
 // The add-shape AABB is what the mesher sweeps, but it ignores every cut, so
 // it is a poor size readout. Probe the real field on a coarse grid instead.
 function probeSize(B) {
+  const live = buildPlan(nodes);
+  // The cost is grid points times shapes, and the shapes are no longer
+  // capped — so the grid is. A four-shape model probes exactly as finely as
+  // it always did; a two-hundred-shape one probes coarsely rather than
+  // freezing the panel for a readout that was never the accurate number
+  // anyway. (The STL is. This is a coarse grid and a bisection.)
+  const lim = Math.max(8, Math.min(56,
+    Math.round(Math.cbrt(1.5e6 / Math.max(planCount(live), 1)))));
   const span = Math.max(B.hi[0] - B.lo[0], B.hi[1] - B.lo[1],
                         B.hi[2] - B.lo[2], 1);
   const cell = span / 32;
-  const N = a => Math.max(2, Math.min(56,
+  const N = a => Math.max(2, Math.min(lim,
                  Math.ceil((B.hi[a] - B.lo[a]) / cell) + 1));
   const n = [N(0), N(1), N(2)];
   const d = [0, 1, 2].map(a => (B.hi[a] - B.lo[a]) / (n[a] - 1));
-  const live = buildPlan(nodes);
   const lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
   // For each of the six extremes keep the *deepest* sample in that outermost
   // slab, not the first one found: bisecting from a thin corner of the slab
@@ -1825,28 +2172,43 @@ function updateInfo() {
       'a Plane cut at z 0 gives it a flat base</span>' : '') +
     `<br>STL grid ≈ ${(vox / 1e6).toFixed(1)} M voxels` +
     (vox > 12e6 ? ' <span style="color:var(--note)">(coarsen it on a phone)</span>'
-                : '');
+                : '') +
+    // Which picture is on the screen, and why. A viewport that quietly
+    // changed how it draws would read as the renderer having got worse.
+    (rayFits ? '' :
+      `<br>${slotAt.size} shapes at once is past what the raymarcher holds ` +
+      `(${RAY_N}) — the viewport is meshing instead` +
+      (meshTris ? `: ${Math.round(meshTris / 1000)}k triangles at `
+                  + `${meshRes.toFixed(2)} mm, ${meshMs} ms on the ${meshOn}` : ''));
 }
 
 // ---------- add / duplicate / delete ----------
+// Which primitives this editor offers. Everything the kernel can draw from a
+// handful of numbers is here, `field` once the document has one to place —
+// and the rest of the baked family (profile, wire, sweep, construct) is not,
+// because each of those is a *drawing* held in a library on the document, and
+// MetaMeld has no surface to draw one on. They stay in the kernel and stay
+// working: a document written elsewhere that names one still opens, renders
+// and exports here.
+const offered = () => PRIM_KEYS.filter(k =>
+  !PRIMS[k].baked || (k === 'field' && SF.fields.length));
+
 $('addBtn').onclick = () => {
   openModal('Add a shape',
-    `<div class="picker">${PRIM_KEYS.filter(k => !PRIMS[k].baked || SF.fields.length)
-      .map(k =>
+    `<div class="picker">${offered().map(k =>
       `<button data-prim="${k}">${PRIMS[k].name}</button>`).join('')}</div>`,
     card => {
       card.onclick = e => {
         const b = e.target.closest('button[data-prim]');
         if (!b) return;
-        if (nodes.length >= MAXN) { showErr('Shape limit is ' + MAXN); closeModal(); return; }
         snapshot();
         const fresh = makeNode(b.dataset.prim);
-        // a field node carries no dimensions of its own: its box and its
-        // quantisation range come from the document's baked grid
-        if (PRIMS[fresh.t].baked && SF.fields.length) {
+        // a field node carries no dimensions of its own: its box comes from
+        // the document's baked grid, and its sample range the kernel reads
+        // off the library entry itself
+        if (isField(fresh) && SF.fields.length) {
           fresh.fi = Math.min(activeField, SF.fields.length - 1);
           fresh.d = SF.fields[fresh.fi].box.slice();
-          fresh.round = SF.fields[fresh.fi].range;
         }
         fresh.b = activeBody;      // build into the body you are standing in
         nodes.push(fresh);
@@ -1854,7 +2216,7 @@ $('addBtn').onclick = () => {
         if (selMode === 'single') picked = new Set();
         picked.add(fresh);
         closeModal();
-        rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+        sceneChanged(); renderList(); renderInspector(); save(); needDraw();
       };
     });
 };
@@ -1867,13 +2229,12 @@ $('dupBtn').onclick = () => {
 
   // one shape: copy it beside itself, in the body it already belongs to
   if (src.length === 1) {
-    if (nodes.length >= MAXN) { showErr('Shape limit is ' + MAXN); return; }
     snapshot();
     const c = nudge(clone(src[0]));
     nodes.splice(sel + 1, 0, c);
     sel++;
     resetPicked();
-    rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+    sceneChanged(); renderList(); renderInspector(); save(); needDraw();
     return;
   }
 
@@ -1889,10 +2250,6 @@ $('dupBtn').onclick = () => {
   // would have the copy cutting the original, so neither is brought over.
   const carried = src.filter(n =>
     n.op === 'add' || (n.tg && n.tg.length && n.tg.every(t => from.includes(t))));
-  if (nodes.length + carried.length > MAXN) {
-    showErr('Shape limit is ' + MAXN + ' — that copy needs ' + carried.length);
-    return;
-  }
 
   snapshot();
   const toNew = new Map();
@@ -1919,7 +2276,7 @@ $('dupBtn').onclick = () => {
   picked = new Set(made);
   sel = nodes.indexOf(made[0]);
   syncBodies();
-  rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+  sceneChanged(); renderList(); renderInspector(); save(); needDraw();
 };
 $('delBtn').onclick = () => {
   if (!picked.size) return;
@@ -1930,7 +2287,7 @@ $('delBtn').onclick = () => {
   sel = Math.max(0, Math.min(first, nodes.length - 1));
   resetPicked();
   syncBodies();   // keep targets and the active body pointing at what is left
-  rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+  sceneChanged(); renderList(); renderInspector(); save(); needDraw();
 };
 
 // ---------- modal ----------
@@ -1963,7 +2320,7 @@ $('startBtn').onclick = () => {
         sel = 0;
         picked = new Set();
         closeModal();
-        rebuildShader(); renderList(); renderInspector(); save();
+        sceneChanged(); renderList(); renderInspector(); save();
         frameModel();
       };
     });
@@ -1993,9 +2350,6 @@ function importDoc(d) {
   if (!Array.isArray(list) || !list.some(n => n && PRIMS[n.t]))
     throw new Error('no shapes in that file');
   const incoming = list.filter(n => n && PRIMS[n.t]).map(n => makeNode(n.t, n));
-  if (nodes.length + incoming.length > MAXN)
-    throw new Error(`that would make ${nodes.length + incoming.length} shapes; `
-                    + `the limit is ${MAXN}`);
   const rawF = d.fields || (d.field ? [d.field] : []);
   const newF = rawF.map(decodeField).filter(Boolean);
   if (SF.fields.length + newF.length > MAXFIELDS)
@@ -2021,8 +2375,8 @@ function importDoc(d) {
     n.b = mapId(n.b);
     if (n.op === 'add') n.tg = null;
     else if (Array.isArray(n.tg)) n.tg = n.tg.map(mapId);
-    if (PRIMS[n.t].baked) n.fi = fBase + Math.min(Math.max(n.fi || 0, 0),
-                                                  Math.max(newF.length - 1, 0));
+    if (isField(n)) n.fi = fBase + Math.min(Math.max(n.fi || 0, 0),
+                                            Math.max(newF.length - 1, 0));
   }
   nodes = nodes.concat(incoming);
   syncBodies();
@@ -2059,7 +2413,7 @@ $('fileInp').onchange = e => {
       snapshot();
       if (merge) { importDoc(d); setStatus('imported ' + file.name); }
       else { adopt(d); sel = 0; setStatus('opened ' + file.name); }
-      rebuildShader(); renderList(); renderInspector(); save(); frameModel();
+      sceneChanged(); renderList(); renderInspector(); save(); frameModel();
     } catch (err) { showErr('open: ' + err.message); }
   };
   r.onerror = () => showErr('open: could not read that file');
@@ -2099,7 +2453,7 @@ $('jsonBtn').onclick = () => {
           adopt(d);
           sel = 0;
           closeModal();
-          rebuildShader(); renderList(); renderInspector(); save(); frameModel();
+          sceneChanged(); renderList(); renderInspector(); save(); frameModel();
         } catch (e) { showErr('JSON: ' + e.message); }
       };
     });
@@ -2149,13 +2503,54 @@ $('stlBtn').onclick = () => {
             (cap / 1e6) + ' M) — raise the resolution number');
     return;
   }
-  let vol;
-  try { vol = new Float32Array(total); }
-  catch (e) { showErr('Out of memory for the grid — raise the resolution'); return; }
-  building = true;
-  $('stlBtn').disabled = true;
   const live = buildPlan(nodes);
   const t0 = Date.now();
+  building = true;
+  $('stlBtn').disabled = true;
+
+  // What to do with a finished mesh, whichever way the grid was filled.
+  const finish = (mesh) => {
+    const nt = mesh ? mesh.indices.length / 3 : 0;
+    building = false; $('stlBtn').disabled = false;
+    if (!nt) { showErr('The model is empty at this resolution'); setStatus(''); return; }
+    const blob = meshToSTL(mesh, 'MetaMeld(TM) model (mm) - metameld');
+    cached = { key: stlKey(res), blob };
+    setStatus(nt.toLocaleString() + ' triangles · ' +
+              ((Date.now() - t0) / 1000).toFixed(1) + ' s');
+    deliver(blob, 'metameld_model.stl', () =>
+      setStatus(nt.toLocaleString() + ' triangles ready — tap Save STL again'));
+  };
+
+  // Filling the grid is one evaluation per corner and essentially all of the
+  // cost of an export, so it goes to the GPU when there is a GPU to send it
+  // to: the same map(), compiled from the same GLSL, rendered into a float
+  // target a slab at a time. What comes back is the grid the loop below would
+  // have written, and the kernel's own mesher walks it either way.
+  const gpu = sampler() && planCount(live) <= GPU_N ? sampler() : null;
+  if (gpu) {
+    setStatus('building STL…');
+    // one frame first, so the disabled button and the status are painted
+    // before the page goes away to do it
+    requestAnimationFrame(() => {
+      let m = null;
+      try { m = SF.mesh(live, { res, bounds: B, sample: gpu, maxSamples: cap }); }
+      catch (e) {
+        building = false; $('stlBtn').disabled = false;
+        showErr('mesh: ' + e.message);
+        return;
+      }
+      finish(m);
+    });
+    return;
+  }
+
+  let vol;
+  try { vol = new Float32Array(total); }
+  catch (e) {
+    building = false; $('stlBtn').disabled = false;
+    showErr('Out of memory for the grid — raise the resolution');
+    return;
+  }
   let i = 0;
   // slice at a time, back to the event loop between slices: a phone stays
   // responsive and Safari never shows the "page is unresponsive" sheet
@@ -2177,19 +2572,7 @@ $('stlBtn').onclick = () => {
     try { mesh = surfaceNets(vol, nx, ny, nz, x0, y0, z0, res); }
     catch (e) { showErr('mesh: ' + e.message); building = false;
                 $('stlBtn').disabled = false; return; }
-    const nt = mesh.indices.length / 3;
-    if (!nt) {
-      showErr('The model is empty at this resolution');
-      building = false; $('stlBtn').disabled = false; setStatus('');
-      return;
-    }
-    const blob = meshToSTL(mesh, 'MetaMeld(TM) model (mm) - metameld');
-    cached = { key: stlKey(res), blob };
-    building = false; $('stlBtn').disabled = false;
-    setStatus(nt.toLocaleString() + ' triangles · ' +
-              ((Date.now() - t0) / 1000).toFixed(1) + ' s');
-    deliver(blob, 'metameld_model.stl', () =>
-      setStatus(nt.toLocaleString() + ' triangles ready — tap Save STL again'));
+    finish(mesh);
   };
   requestAnimationFrame(step);
 };
@@ -2252,7 +2635,7 @@ grip.addEventListener('click', () => {
 });
 
 // ---------- go ----------
-rebuildShader();
+sceneChanged();
 renderList();
 renderInspector();
 $('resVal').textContent = parseFloat($('resInp').value).toFixed(2) + ' mm';
