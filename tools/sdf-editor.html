@@ -281,7 +281,86 @@ This kernel was extracted from MetaMeld
 which remains separately licensed. "MetaMeld" is a reserved trademark of that
 project and is not licensed with this software.
 
-Built from SinterForm b7dd522400055e425175eb8440125e7f922a136f
+
+================================================================================
+THIRD-PARTY SOFTWARE
+================================================================================
+
+This product includes software developed by third parties, listed below.
+Apache-2.0 section 4(d) is why they are listed here: these terms travel with
+the code, and a redistribution that drops this file drops the grant with it.
+
+
+--------------------------------------------------------------------------------
+Signed distance functions by Inigo Quilez — MIT License
+--------------------------------------------------------------------------------
+
+Several primitive distance functions in this repository are derived from the
+distance-function library published by Inigo Quilez at:
+
+    https://iquilezles.org/articles/distfunctions/
+
+That code is published under the MIT License, which permits commercial use
+provided the licence text is included and the source is credited. Both
+conditions are met here.
+
+Derived functions, and where each one lives:
+
+    capped cone       PRIMS.cone       sinterform.js  ·  GLSL.cone       glsl.js
+    ellipsoid bound   PRIMS.ellipsoid  sinterform.js  ·  GLSL.ellipsoid  glsl.js
+    pyramid           PRIMS.pyramid    sinterform.js  ·  GLSL.pyramid    glsl.js
+    octahedron        PRIMS.octa       sinterform.js  ·  GLSL.octa       glsl.js
+    polygon distance  polygonSDF       sinterform.js  ·  profileDecls    glsl.js
+                      polygonSDF       sketch.js
+                      polygonSDF       sketch3d.js
+
+Each is adapted rather than copied verbatim — rewritten in JavaScript,
+re-parameterised onto this kernel's dimension conventions, or both — but the
+method and its derivation are his, and the grant below is what makes that use
+lawful.
+
+The remaining primitives (sphere, box, cylinder, capsule, torus, prism, dome,
+arc, link, plane, field, profile) are either elementary distance formulae or
+were written for this repository.
+
+
+The MIT License
+
+Copyright (c) Inigo Quilez
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+A standing note on provenance
+================================================================================
+
+Shadertoy's default licence, applied to any shader whose author did not state
+otherwise, is CC BY-NC-SA 3.0. The NonCommercial term makes it unusable here
+and the ShareAlike term conflicts with Apache-2.0, so a function whose only
+provenance is an unlicensed Shadertoy paste cannot go into this repository.
+
+Take distance functions from a source that states its terms — the article above
+is the usual one — and add the function and its source to the list above in the
+same commit.
+
+Built from SinterForm 56d95c43de6d95444ec9f6e25160e55109e72752
 https://github.com/DuckySonadar/sinterform
 
 ----------------------------------------------------------------------
@@ -516,10 +595,16 @@ https://github.com/DuckySonadar/sinterform
 // ======================================================================
 // SDF core. Units are millimetres, +Z is up, z = 0 is the build plate.
 //
-// Every primitive is written twice -- here in JS, and in GLSL in glsl.js for
-// anything that wants to draw it. They used to sit side by side, which was
-// the only thing keeping them in step; now that they do not, check-glsl.mjs
-// is what keeps them in step, and it compiles the real shader to do it.
+// Every primitive is defined once, in GLSL, in glsl.js. What is here is that
+// definition translated into JavaScript by build-twins.mjs, so the two halves
+// cannot say different things -- see the generated block below.
+//
+// They used to be two hand-written halves with check-glsl.mjs watching for
+// drift. It was watching, and it still missed one: the cone's GLSL divided by
+// dot(k2, k2) unguarded while its twin here wrote `|| 1e-9`, a real difference
+// in a case the random-point comparison never landed on. check-glsl still runs
+// and still compiles the real shader, but it is now asking whether a
+// translation is faithful rather than whether two authors agreed.
 // ======================================================================
 
 // ======================================================================
@@ -537,6 +622,322 @@ https://github.com/DuckySonadar/sinterform
 // is ~0.06 mm at the 8 mm range the exporter uses -- far finer than the grid
 // spacing, so the quantisation is never the limit.
 let fields = [];         // [{ name, nx, ny, nz, box:[hx,hy,hz], range, data, tex }]
+
+// Profiles, the same idea for a shape that is a *drawing* rather than a
+// sampled volume. A closed 2D outline extruded to a thickness is most of what
+// anyone sketches, and it does not have to be baked to reach a shader: the
+// distance to a polygon is a loop over its edges, which GLSL can run as
+// happily as JS can. Baking one would cost a megabyte of texture and a grid's
+// worth of resolution to say what a few hundred vec2s say exactly.
+//
+// Like `fields`, they live on the document rather than inside a node, and a
+// node of type `profile` refers to one by index.
+let profiles = [];       // [{ name, loops: [[[x, y], ...], ...] }]
+
+// Wires, the third of the same idea: a shape that is a *path* rather than an
+// area or a volume. A drawn curve has no interior, so the only solid it stands
+// for is the one you get by giving it a thickness -- and that thickness may
+// vary as it goes, which is what the fourth number on each point is for.
+//
+// [x, y, z, r] per point, one polyline per entry of `lines`, so a wire can be
+// several disjoint curves. Like fields and profiles, it lives on the document
+// and a node of type `wire` refers to one by index.
+let wires = [];          // [{ name, lines: [[[x, y, z, r], ...], ...] }]
+
+// Sweeps: a section dragged along a path. The largest of the document shapes,
+// and the only one whose items are not raw geometry -- each is a path segment
+// carrying the frame, span, scale, roll, caps and turn that sweep.js worked
+// out for it. `SinterSweep.pack()` builds them; this file only evaluates.
+let sweeps = [];         // [{ name, segs: Float64Array, kind, sect: [a, b, c] }]
+
+// Constructs: masses hung on a skeleton of connectors. Like a sweep's, the
+// items are not raw geometry -- each carries the frame `SinterConstruct.pack()`
+// resolved for it by walking the connector tree, so this file evaluates a flat
+// list and never sees a hierarchy. That is what makes a pose cheap: the tree is
+// walked once per repack, not once per sample.
+let constructs = [];     // [{ name, items: Float64Array }]
+
+// iq's polygon distance: nearest edge for the magnitude, a crossing count for
+// the sign. Loops beyond the first are holes -- a point inside an odd number
+// of them is outside the material. Exact, and 1-Lipschitz.
+//
+// This is the same function sketch.js exports, and deliberately a second copy:
+// the two files do not depend on each other, and check-glsl.mjs holds this one
+// against its GLSL twin while check-sketch.mjs holds that one against the
+// geometry. A third copy would be one too many; two is the cost of the seam.
+function polygonSDF(loops, px, py) {
+  let d = Infinity, inside = false;
+  for (const poly of loops) {
+    const n = poly.length;
+    if (n < 3) continue;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const ex = poly[j][0] - poly[i][0], ey = poly[j][1] - poly[i][1];
+      const wx = px - poly[i][0], wy = py - poly[i][1];
+      let t = (wx * ex + wy * ey) / (ex * ex + ey * ey + 1e-300);
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const bx = wx - ex * t, by = wy - ey * t;
+      const dd = bx * bx + by * by;
+      if (dd < d) d = dd;
+      const c1 = py >= poly[i][1], c2 = py < poly[j][1];
+      if ((c1 && c2 && ex * wy > ey * wx) || (!c1 && !c2 && ex * wy < ey * wx))
+        inside = !inside;
+    }
+  }
+  return d === Infinity ? 1e9 : (inside ? -1 : 1) * Math.sqrt(d);
+}
+
+// ----------------------------------------------------------------------
+// The seam: the JS half of the intrinsics build-twins.mjs binds.
+//
+// Every primitive is defined once, in GLSL, and translated into the JS twins
+// below. Two of them read data rather than computing from their dims, and the
+// read is the one thing a shader and JavaScript genuinely do differently: the
+// shader asks a sampler or reads an outline compiled into its own source, and
+// JavaScript indexes an array. These functions are that difference, and there
+// is nothing else in it -- the box union, the slab, the crossing count and the
+// nearest-edge search are all translated.
+// ----------------------------------------------------------------------
+
+// An outline with no data still has to be a shape, because a node can name a
+// profile slot before the application has put anything in it -- and a
+// primitive that evaluates to nothing is a primitive nobody can see to fix. So
+// an empty slot is a 20 x 20 mm square, which is also what makes `profile`
+// appear in the viewer's every-primitive scene with no setup at all.
+const DEFAULT_OUTLINE = [[[-10, -10], [10, -10], [10, 10], [-10, 10]]];
+
+// A wire with nothing in it is still a shape, same reasoning as the profile's
+// default square: a node can name a slot the application has not filled yet.
+// A 20 mm run at 2 mm radius, tapering to 1, so the default shows that the
+// thickness varies rather than hiding it.
+const DEFAULT_WIRE = [[[-10, 0, 0, 2], [10, 0, 0, 1]]];
+
+// The segments of a wire, flattened across its polylines and cached on it:
+// eight numbers each -- ax, ay, az, ra, bx, by, bz, rb. Zero-length segments
+// are dropped here rather than guarded for in the shader.
+function wireSegments(w) {
+  const lines = (w && w.lines && w.lines.some(l => l && l.length >= 2))
+    ? w.lines : DEFAULT_WIRE;
+  if (w && w._segSrc === lines) return w._segs;
+  const e = [];
+  for (const line of lines) {
+    if (!line || line.length < 2) continue;
+    for (let i = 1; i < line.length; i++) {
+      const a = line[i - 1], b = line[i];
+      if (Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]) < 1e-12) continue;
+      // laid out in the order the primitive's intrinsics are declared --
+      // segA, segB, segR -- because that is the order slotItems hands to the
+      // unroller, and one layout serving both is what keeps them in step
+      e.push(a[0], a[1], a[2], b[0], b[1], b[2],
+             a[3] === undefined ? 1 : a[3], b[3] === undefined ? 1 : b[3]);
+    }
+  }
+  if (w) { w._segSrc = lines; w._segs = e; }
+  return e;
+}
+// The reads themselves, on the flat array above. A twin is handed that array
+// once, when the primitive is entered -- the same thing the shader is handed,
+// which has its items compiled in before it runs -- so these are an index and
+// nothing else. Resolving the slot inside each read instead put the default
+// lookup and the cache check on the hottest path in the kernel.
+function segCount(e) { return e.length / 8; }
+function segAx(e, i) { return e[8 * i]; }
+function segAy(e, i) { return e[8 * i + 1]; }
+function segAz(e, i) { return e[8 * i + 2]; }
+function segBx(e, i) { return e[8 * i + 3]; }
+function segBy(e, i) { return e[8 * i + 4]; }
+function segBz(e, i) { return e[8 * i + 5]; }
+function segRA(e, i) { return e[8 * i + 6]; }
+function segRB(e, i) { return e[8 * i + 7]; }
+
+// The item data for a slotted primitive, flat, in the order that primitive's
+// intrinsics are declared -- which is the order the generated unroller reads
+// them back in. This is the kernel's half of drawing a slotted shape: it
+// constructs the data, and glsl.js turns data into source. An absent entry
+// gets the primitive's default, so an empty slot is a shape rather than a
+// compile error, and the default is written down once, here.
+// A sweep's items come pre-packed, because building them needs parallel
+// transport, holonomy and the corner axis -- construction that belongs to
+// sweep.js and not to an evaluator. An empty slot is a plain straight run, so
+// the primitive still draws something before an application feeds it.
+const SWEEP_STRIDE = 32;
+const DEFAULT_SWEEP = (() => {
+  const L = 20, e = new Float64Array(SWEEP_STRIDE);
+  e[0] = -10; e[3] = 1;                       // A, T = +x
+  e[6] = L; e[7] = 1; e[8] = 1;               // span, scale 1 -> 1
+  e[10] = 1;                                  // no roll, taper 1, nothing to reach
+  e[12] = 3;                                  // cull radius: the section's own
+  e[14] = 1; e[18] = 1;                       // U = +y, V = +z
+  e[20] = 1;                                  // turn axis, unused: no join here
+  e[25] = 1; e[26] = 1;                       // capped both ends, no rounded joint
+  e[29] = 3;                                  // kind 0, circle, r = 3
+  return e;
+})();
+function sweepSegs(w) {
+  const s = w && w.segs;
+  return (s && s.length >= SWEEP_STRIDE) ? s : DEFAULT_SWEEP;
+}
+function swCount(e) { return Math.floor(e.length / SWEEP_STRIDE); }
+function swf(e, i, k) { return e[SWEEP_STRIDE * i + k]; }
+
+// A construct's items come pre-packed too, and for a sharper version of the
+// same reason: building them means walking a connector tree and composing each
+// joint's rotation down the chain, which is construction and belongs to
+// construct.js. What arrives here is flat -- one mass per item, carrying the
+// frame already resolved and already inverted, so evaluating it is arithmetic
+// and nothing else.
+//
+//   0..2 cull centre   3 cull radius   4..6 origin
+//   7..9 inverse rotation, imaginary   10 its real part
+//   11..13 dims        14..16 kind, tip, blend
+const CON_STRIDE = 17;
+
+// An empty slot is a shape, same rule as the wire's tapered run and the
+// profile's square: a node can name a construct the application has not filled
+// in, and a primitive that draws nothing is a primitive nobody can see to fix.
+//
+// This one is a small armature rather than a single mass, because what a
+// construct *is* -- masses on a skeleton, blended where they meet -- is not
+// visible in one of anything. It uses all four kinds and one connector turned
+// off-axis, so the default is also the case that would catch a broken
+// quaternion, a broken cull or a broken kind dispatch the moment anybody
+// looked at the viewer's every-primitive scene.
+const DEFAULT_CONSTRUCT = (() => {
+  const e = [];
+  // cx, cy, cz, cull radius, ox, oy, oz, inverse quaternion (x, y, z, w),
+  // dims, kind, tip, blend -- the layout above, written the way it is read
+  const put = (c, cr, o, q, dm, kind, tip, k) =>
+    e.push(c[0], c[1], c[2], cr + k, o[0], o[1], o[2], q[0], q[1], q[2], q[3],
+           dm[0], dm[1], dm[2], kind, tip, k);
+  const I = [0, 0, 0, 1];
+  // a turn of `a` degrees about +Y, inverted: the arms, and the only thing
+  // here that is not axis-aligned
+  const rad = Math.PI / 180;             // RAD itself is declared further down
+  const armQ = (a) => {
+    const h = a * rad * 0.5;
+    return [0, -Math.sin(h), 0, Math.cos(h)];
+  };
+  const armDir = (a) => [Math.sin(a * rad), 0, Math.cos(a * rad)];
+  put([0, 0, -4], 14, [0, 0, -14], I, [4, 1, 20], 0, 3, 0);        // spine
+  put([0, 0, -2], 8, [0, 0, -2], I, [7, 5, 8], 1, 0, 3);           // chest
+  put([0, 0, 11], 5, [0, 0, 11], I, [5, 0, 0], 2, 0, 2.5);         // head
+  put([0, -1, -19], Math.hypot(5, 7, 2.5), [0, -1, -19], I,
+      [5, 7, 2.5], 3, 1.2, 2);                                     // base
+  // the arms are elliptical in section -- flattened in y, which the arms' own
+  // rotation leaves along the world's y -- so the default exercises that too
+  for (const a of [50, -50]) {
+    const u = armDir(a);
+    put([7 * u[0], 0, 4 + 7 * u[2]], 9.2, [0, 0, 4], armQ(a), [2.2, 0.6, 14], 0, 1.4, 2);
+  }
+  return Float64Array.from(e);
+})();
+function conItems(c) {
+  const it = c && c.items;
+  return (it && it.length >= CON_STRIDE) ? it : DEFAULT_CONSTRUCT;
+}
+function conCount(e) { return Math.floor(e.length / CON_STRIDE); }
+function conf(e, i, k) { return e[CON_STRIDE * i + k]; }
+
+// The JS half of the sweep's polygon-section hook: a slot number and a point
+// in the section plane. Same outlines, same polygonSDF, same default -- a
+// sweep's section is a 2D sketch and nothing else.
+function sectionPoly(slot, u, v) {
+  const pr = profiles[Math.max(slot | 0, 0)];
+  const loops = (pr && pr.loops && pr.loops.some(l => l && l.length >= 3))
+    ? pr.loops : DEFAULT_OUTLINE;
+  return polygonSDF(loops, u, v);
+}
+
+function slotItems(t, obj) {
+  if (t === 'wire') return wireSegments(obj);
+  if (t === 'profile') return outlineEdges(obj);
+  if (t === 'sweep') return sweepSegs(obj);
+  if (t === 'construct') return conItems(obj);
+  throw new Error('not a slotted primitive: ' + t);
+}
+
+// `count` slots' worth, which is what a shader needs: a node may name a slot
+// the document has not filled in, and every named slot must exist as a
+// function. Absent entries come back as the primitive's default rather than as
+// nothing, so an unfilled slot draws a shape instead of failing to compile.
+function slotList(t, list, count) {
+  const n = Math.max(count | 0, (list || []).length, 1);
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(slotItems(t, (list || [])[i]));
+  return out;
+}
+
+// Half-extents of a wire, each point expanded by its own radius. Tight: the
+// furthest reach along any axis is attained at some point plus its radius.
+function wireExtent(lines) {
+  const e = wireSegments({ lines });
+  let h = [0, 0, 0];
+  for (let i = 0; i < e.length; i += 8)
+    for (const [o, r] of [[0, e[i + 6]], [3, e[i + 7]]])
+      for (let k = 0; k < 3; k++) h[k] = Math.max(h[k], Math.abs(e[i + o + k]) + r);
+  return h;
+}
+
+// The edges of an outline, flattened across its loops and cached on it: each
+// entry is Ax, Ay, Bx, By, where B is the *previous* vertex, matching the
+// pairing polygonSDF walks and the one profileDecls unrolls.
+function outlineEdges(o) {
+  const loops = (o && o.loops && o.loops.some(l => l && l.length >= 3))
+    ? o.loops : DEFAULT_OUTLINE;
+  if (o && o._edgeSrc === loops) return o._edges;
+  const e = [];
+  for (const poly of loops) {
+    if (!poly || poly.length < 3) continue;
+    for (let a = 0, b = poly.length - 1; a < poly.length; b = a++)
+      e.push(poly[a][0], poly[a][1], poly[b][0], poly[b][1]);
+  }
+  if (o) { o._edgeSrc = loops; o._edges = e; }
+  return e;
+}
+function edgeCount(e) { return e.length / 4; }
+function edgeAx(e, i) { return e[4 * i]; }
+function edgeAy(e, i) { return e[4 * i + 1]; }
+function edgeBx(e, i) { return e[4 * i + 2]; }
+function edgeBy(e, i) { return e[4 * i + 3]; }
+
+// What `texture()` does to a field, in JavaScript. `u`, `v`, `w` are the
+// texture's own coordinates in its own order -- z, y, x -- and the result is
+// the raw sample in 0..1, the way GLSL hands back an R8 texel. Samples sit on
+// the grid corners, spanning the box exactly, which is what every baker here
+// writes; the shader's half-texel correction is in `fieldSample`.
+function sampleFieldUVW(f, u, v, w) {
+  if (!f || !f.data) return 0.5;              // 0.5 -> zero mm after decoding
+  const cl = (t, n) => Math.min(Math.max(t, 0), n - 1);
+  const gz = cl(u * (f.nz - 1), f.nz);
+  const gy = cl(v * (f.ny - 1), f.ny);
+  const gx = cl(w * (f.nx - 1), f.nx);
+  const x0 = Math.floor(gx), y0 = Math.floor(gy), z0 = Math.floor(gz);
+  const x1 = Math.min(x0 + 1, f.nx - 1), y1 = Math.min(y0 + 1, f.ny - 1),
+        z1 = Math.min(z0 + 1, f.nz - 1);
+  const tx = gx - x0, ty = gy - y0, tz = gz - z0;
+  const at = (i, j, k) => f.data[(i * f.ny + j) * f.nz + k];
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const c00 = lerp(at(x0, y0, z0), at(x1, y0, z0), tx);
+  const c10 = lerp(at(x0, y1, z0), at(x1, y1, z0), tx);
+  const c01 = lerp(at(x0, y0, z1), at(x1, y0, z1), tx);
+  const c11 = lerp(at(x0, y1, z1), at(x1, y1, z1), tx);
+  return lerp(lerp(c00, c10, ty), lerp(c01, c11, ty), tz) / 255;
+}
+
+// The half-extent of a profile in its own plane. A node carries this in its
+// dims because `ext` -- which is what bounds are computed from -- is handed
+// the dims and nothing else, the same way a field carries its box.
+function profileExtent(loops) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const poly of loops)
+    for (const p of poly) {
+      if (p[0] < x0) x0 = p[0];
+      if (p[0] > x1) x1 = p[0];
+      if (p[1] < y0) y0 = p[1];
+      if (p[1] > y1) y1 = p[1];
+    }
+  return x1 < x0 ? [0, 0] : [Math.max(Math.abs(x0), Math.abs(x1)),
+                             Math.max(Math.abs(y0), Math.abs(y1))];
+}
 
 function decodeField(f) {
   if (!f || !f.data) return null;
@@ -587,12 +988,495 @@ function sampleField(f, x, y, z) {
   return (c / 255 * 2 - 1) * f.range;
 }
 
+// <<< generated twins
+// ---------------------------------------------------------------------------
+// GENERATED by build-twins.mjs from glsl.js — do not edit by hand.
+//
+// The GLSL is the definition of each primitive; this is that definition
+// translated into JavaScript, so the two halves cannot say different things.
+// Run `node build-twins.mjs` after changing a primitive's GLSL; check-kernel
+// fails if this block is stale, and check-glsl proves the translation is
+// faithful by running both on the same points.
+// ---------------------------------------------------------------------------
+// smin — from GLSL.FOLD
+function smin(a, b, k) {
+    if ((k <= 0.0)) {
+      return Math.min(a, b);
+    }
+    let h = Math.min(Math.max((0.5 + ((0.5 * (b - a)) / k)), 0.0), 1.0);
+    return ((b + (a - b)*h) - ((k * h) * (1.0 - h)));
+}
+// smax — from GLSL.FOLD
+function smax(a, b, k) {
+    return (-smin((-a), (-b), k));
+}
+
+// sweepSection — from GLSL.sweep.src
+function sweepSection(kind, sp_0, sp_1, sp_2, u, v) {
+    if ((kind < 0.5)) {
+      return (Math.hypot(u, v) - sp_0);
+    }
+    if ((kind < 1.5)) {
+      let hw = Math.max(((sp_0 * 0.5) - sp_2), 0.0);
+      let hh = Math.max(((sp_1 * 0.5) - sp_2), 0.0);
+      let qu = (Math.abs(u) - hw);
+      let qv = (Math.abs(v) - hh);
+      return ((Math.hypot(Math.max(qu, 0.0), Math.max(qv, 0.0)) + Math.min(Math.max(qu, qv), 0.0)) - sp_2);
+    }
+    if ((kind < 2.5)) {
+      return Math.max((Math.hypot(u, v) - sp_0), (-v));
+    }
+    return sectionPoly(sp_0, u, v);
+}
+// constructMass — from GLSL.construct.src
+function constructMass(kind, q_0, q_1, q_2, dm_0, dm_1, dm_2, tip) {
+    if ((kind < 0.5)) {
+      let r0 = dm_0;
+      let h = dm_2;
+      let asp = Math.max(dm_1, 1e-4);
+      let e_0 = q_0, e_1 = (q_1 / asp), e_2 = q_2;
+      let m = Math.min(asp, 1.0);
+      let sl = ((r0 - tip) / h);
+      let a2 = (1.0 - (sl * sl));
+      if ((a2 <= 0.0)) {
+        return (Math.min((Math.hypot(e_0, e_1, e_2) - r0), (Math.hypot((e_0 - 0.0), (e_1 - 0.0), (e_2 - h)) - tip)) * m);
+      }
+      let a = Math.sqrt(a2);
+      let w_0 = Math.hypot(e_0, e_1), w_1 = e_2;
+      let t = (w_0*(-sl) + w_1*a);
+      if ((t < 0.0)) {
+        return ((Math.hypot(w_0, w_1) - r0) * m);
+      }
+      if ((t > (a * h))) {
+        return ((Math.hypot((w_0 - 0.0), (w_1 - h)) - tip) * m);
+      }
+      return (((w_0*a + w_1*sl) - r0) * m);
+    }
+    if ((kind < 1.5)) {
+      let rr_0 = Math.max(dm_0, 1e-3), rr_1 = Math.max(dm_1, 1e-3), rr_2 = Math.max(dm_2, 1e-3);
+      let k0 = Math.hypot((q_0 / rr_0), (q_1 / rr_1), (q_2 / rr_2));
+      let k1 = Math.hypot((q_0 / (rr_0 * rr_0)), (q_1 / (rr_1 * rr_1)), (q_2 / (rr_2 * rr_2)));
+      if ((k1 < 1e-6)) {
+        return (-Math.min(rr_0, Math.min(rr_1, rr_2)));
+      }
+      return ((k0 * (k0 - 1.0)) / k1);
+    }
+    if ((kind < 2.5)) {
+      return (Math.hypot(q_0, q_1, q_2) - dm_0);
+    }
+    let e_0 = Math.max((dm_0 - tip), 0.0), e_1 = Math.max((dm_1 - tip), 0.0), e_2 = Math.max((dm_2 - tip), 0.0);
+    let g_0 = (Math.abs(q_0) - e_0), g_1 = (Math.abs(q_1) - e_1), g_2 = (Math.abs(q_2) - e_2);
+    return ((Math.hypot(Math.max(g_0, 0.0), Math.max(g_1, 0.0), Math.max(g_2, 0.0)) + Math.min(Math.max(g_0, Math.max(g_1, g_2)), 0.0)) - tip);
+}
+const TWINS = {
+  // pSphere — from GLSL.sphere.src
+  sphere: (p, d, r) => {
+    let p_0 = p[0], p_1 = p[1], p_2 = p[2];
+    let d_0 = d[0], d_1 = d[1], d_2 = d[2];
+    return (Math.hypot(p_0, p_1, p_2) - d_0);
+  },
+  // pBox — from GLSL.box.src
+  box: (p, d, r) => {
+    let p_0 = p[0], p_1 = p[1], p_2 = p[2];
+    let d_0 = d[0], d_1 = d[1], d_2 = d[2];
+    let b_0 = Math.max(((d_0 * 0.5) - r), 0.0), b_1 = Math.max(((d_1 * 0.5) - r), 0.0), b_2 = Math.max(((d_2 * 0.5) - r), 0.0);
+    let q_0 = (Math.abs(p_0) - b_0), q_1 = (Math.abs(p_1) - b_1), q_2 = (Math.abs(p_2) - b_2);
+    return ((Math.hypot(Math.max(q_0, 0.0), Math.max(q_1, 0.0), Math.max(q_2, 0.0)) + Math.min(Math.max(q_0, Math.max(q_1, q_2)), 0.0)) - r);
+  },
+  // pCyl — from GLSL.cylinder.src
+  cylinder: (p, d, r) => {
+    let p_0 = p[0], p_1 = p[1], p_2 = p[2];
+    let d_0 = d[0], d_1 = d[1], d_2 = d[2];
+    let rr = Math.max((d_0 - r), 0.0);
+    let hh = Math.max(((d_1 * 0.5) - r), 0.0);
+    let q_0 = (Math.hypot(p_0, p_1) - rr), q_1 = (Math.abs(p_2) - hh);
+    return ((Math.min(Math.max(q_0, q_1), 0.0) + Math.hypot(Math.max(q_0, 0.0), Math.max(q_1, 0.0))) - r);
+  },
+  // pCap — from GLSL.capsule.src
+  capsule: (p, d, r) => {
+    let p_0 = p[0], p_1 = p[1], p_2 = p[2];
+    let d_0 = d[0], d_1 = d[1], d_2 = d[2];
+    let hh = Math.max(((d_1 * 0.5) - d_0), 0.0);
+    let q_0 = p_0, q_1 = p_1, q_2 = (p_2 - Math.min(Math.max(p_2, (-hh)), hh));
+    return (Math.hypot(q_0, q_1, q_2) - d_0);
+  },
+  // pTorus — from GLSL.torus.src
+  torus: (p, d, r) => {
+    let p_0 = p[0], p_1 = p[1], p_2 = p[2];
+    let d_0 = d[0], d_1 = d[1], d_2 = d[2];
+    let q_0 = (Math.hypot(p_0, p_1) - d_0), q_1 = p_2;
+    return (Math.hypot(q_0, q_1) - d_1);
+  },
+  // pCone — from GLSL.cone.src
+  cone: (p, d, r) => {
+    let p_0 = p[0], p_1 = p[1], p_2 = p[2];
+    let d_0 = d[0], d_1 = d[1], d_2 = d[2];
+    let r1 = Math.max((d_0 - r), 0.0);
+    let r2 = Math.max((d_1 - r), 0.0);
+    let h = Math.max(((d_2 * 0.5) - r), 0.0);
+    let q_0 = Math.hypot(p_0, p_1), q_1 = p_2;
+    let k1_0 = r2, k1_1 = h;
+    let k2_0 = (r2 - r1), k2_1 = (2.0 * h);
+    const t0 = (q_1 < 0.0);
+    let ca_0 = (q_0 - Math.min(q_0, (t0 ? r1 : r2))), ca_1 = (Math.abs(q_1) - h);
+    const t1 = Math.min(Math.max((((k1_0 - q_0)*k2_0 + (k1_1 - q_1)*k2_1) / Math.max((k2_0*k2_0 + k2_1*k2_1), 1e-9)), 0.0), 1.0);
+    let cb_0 = ((q_0 - k1_0) + (k2_0 * t1)), cb_1 = ((q_1 - k1_1) + (k2_1 * t1));
+    const t2 = ((cb_0 < 0.0) && (ca_1 < 0.0));
+    let s = (t2 ? (-1.0) : 1.0);
+    return ((s * Math.sqrt(Math.min((ca_0*ca_0 + ca_1*ca_1), (cb_0*cb_0 + cb_1*cb_1)))) - r);
+  },
+  // pEllip — from GLSL.ellipsoid.src
+  ellipsoid: (p, d, r) => {
+    let p_0 = p[0], p_1 = p[1], p_2 = p[2];
+    let d_0 = d[0], d_1 = d[1], d_2 = d[2];
+    let rr_0 = Math.max((d_0 * 0.5), 1e-3), rr_1 = Math.max((d_1 * 0.5), 1e-3), rr_2 = Math.max((d_2 * 0.5), 1e-3);
+    let k0 = Math.hypot((p_0 / rr_0), (p_1 / rr_1), (p_2 / rr_2));
+    let k1 = Math.hypot((p_0 / (rr_0 * rr_0)), (p_1 / (rr_1 * rr_1)), (p_2 / (rr_2 * rr_2)));
+    if ((k1 < 1e-6)) {
+      return (-Math.min(rr_0, Math.min(rr_1, rr_2)));
+    }
+    return ((k0 * (k0 - 1.0)) / k1);
+  },
+  // pPrism — from GLSL.prism.src
+  prism: (p, d, r) => {
+    let p_0 = p[0], p_1 = p[1], p_2 = p[2];
+    let d_0 = d[0], d_1 = d[1], d_2 = d[2];
+    let n = Math.min(Math.max(Math.floor((d_2 + 0.5)), 3.0), 12.0);
+    let ang = (3.14159265359 / n);
+    let R = Math.max((d_0 - (r / Math.cos(ang))), 0.0);
+    let hh = Math.max(((d_1 * 0.5) - r), 0.0);
+    let a = Math.atan2(p_1, p_0);
+    a = (((a + ang) - (2.0 * ang)*Math.floor((a + ang)/(2.0 * ang))) - ang);
+    const t0 = Math.hypot(p_0, p_1);
+    let q_0 = (t0 * Math.cos(a)), q_1 = (t0 * Math.sin(a));
+    let ap = (R * Math.cos(ang));
+    let hl = (R * Math.sin(ang));
+    let e = Math.hypot((q_0 - ap), (q_1 - Math.min(Math.max(q_1, (-hl)), hl)));
+    const t1 = (q_0 < ap);
+    let w_0 = (t1 ? (-e) : e), w_1 = (Math.abs(p_2) - hh);
+    return ((Math.min(Math.max(w_0, w_1), 0.0) + Math.hypot(Math.max(w_0, 0.0), Math.max(w_1, 0.0))) - r);
+  },
+  // pPyr — from GLSL.pyramid.src
+  pyramid: (p, d, r) => {
+    let p_0 = p[0], p_1 = p[1], p_2 = p[2];
+    let d_0 = d[0], d_1 = d[1], d_2 = d[2];
+    let b = Math.max(d_0, 1e-4);
+    let H = Math.max(d_1, 1e-4);
+    let P_0 = (p_0 / b), P_1 = ((p_2 + (H * 0.5)) / b), P_2 = (p_1 / b);
+    let h = (H / b);
+    let m2 = ((h * h) + 0.25);
+    const t0 = Math.abs(P_0), t1 = Math.abs(P_2);
+    P_0 = t0;
+    P_2 = t1;
+    const t2 = (P_2 > P_0);
+    const t3 = (t2 ? P_2 : P_0), t4 = (t2 ? P_0 : P_2);
+    P_0 = t3;
+    P_2 = t4;
+    P_0 -= 0.5;
+    P_2 -= 0.5;
+    let q_0 = P_2, q_1 = ((h * P_1) - (0.5 * P_0)), q_2 = ((h * P_0) + (0.5 * P_1));
+    let s = Math.max((-q_0), 0.0);
+    let t = Math.min(Math.max(((q_1 - (0.5 * P_2)) / (m2 + 0.25)), 0.0), 1.0);
+    let A = (((m2 * (q_0 + s)) * (q_0 + s)) + (q_1 * q_1));
+    let B = (((m2 * (q_0 + (0.5 * t))) * (q_0 + (0.5 * t))) + ((q_1 - (m2 * t)) * (q_1 - (m2 * t))));
+    const t5 = (Math.min(q_1, (((-q_0) * m2) - (q_1 * 0.5))) > 0.0);
+    let d2 = (t5 ? 0.0 : Math.min(A, B));
+    let lat = Math.sqrt(((d2 + (q_2 * q_2)) / m2));
+    let e2 = (Math.hypot(Math.max(P_0, 0.0), Math.max(P_2, 0.0)) + Math.min(P_0, 0.0));
+    let base = Math.hypot(Math.max(e2, 0.0), P_1);
+    let m = Math.min(lat, base);
+    const t6 = ((q_2 < 0.0) && (P_1 > 0.0));
+    return ((t6 ? (-m) : m) * b);
+  },
+  // pOcta — from GLSL.octa.src
+  octa: (p, d, r) => {
+    let p_0 = p[0], p_1 = p[1], p_2 = p[2];
+    let d_0 = d[0], d_1 = d[1], d_2 = d[2];
+    let s = Math.max((d_0 - (r * 1.73205081)), 0.0);
+    const t0 = Math.abs(p_0), t1 = Math.abs(p_1), t2 = Math.abs(p_2);
+    p_0 = t0;
+    p_1 = t1;
+    p_2 = t2;
+    let m = (((p_0 + p_1) + p_2) - s);
+    let q_0, q_1, q_2;
+    if (((3.0 * p_0) < m)) {
+      q_0 = p_0;
+      q_1 = p_1;
+      q_2 = p_2;
+    } else {
+      if (((3.0 * p_1) < m)) {
+        q_0 = p_1;
+        q_1 = p_2;
+        q_2 = p_0;
+      } else {
+        if (((3.0 * p_2) < m)) {
+          q_0 = p_2;
+          q_1 = p_0;
+          q_2 = p_1;
+        } else {
+          return ((m * 0.57735027) - r);
+        }
+      }
+    }
+    let k = Math.min(Math.max((0.5 * ((q_2 - q_1) + s)), 0.0), s);
+    return (Math.hypot(q_0, ((q_1 - s) + k), (q_2 - k)) - r);
+  },
+  // pDome — from GLSL.dome.src
+  dome: (p, d, r) => {
+    let p_0 = p[0], p_1 = p[1], p_2 = p[2];
+    let d_0 = d[0], d_1 = d[1], d_2 = d[2];
+    let R = Math.max(d_0, 1e-4);
+    let h = Math.min(Math.max(d_1, (-R)), R);
+    let w = Math.sqrt(Math.max(((R * R) - (h * h)), 0.0));
+    let q_0 = Math.hypot(p_0, p_1), q_1 = p_2;
+    let s = Math.max(((((h - R) * q_0) * q_0) + ((w * w) * ((h + R) - (2.0 * q_1)))), ((h * q_0) - (w * q_1)));
+    const t0 = (s < 0.0);
+    const t1 = (q_0 < w);
+    return (t0 ? (Math.hypot(q_0, q_1) - R) : (t1 ? (h - q_1) : Math.hypot((q_0 - w), (q_1 - h))));
+  },
+  // pArc — from GLSL.arc.src
+  arc: (p, d, r) => {
+    let p_0 = p[0], p_1 = p[1], p_2 = p[2];
+    let d_0 = d[0], d_1 = d[1], d_2 = d[2];
+    let th = (Math.min(Math.max(d_2, 10.0), 360.0) * 0.00872664626);
+    let sc_0 = Math.sin(th), sc_1 = Math.cos(th);
+    p_0 = Math.abs(p_0);
+    const t0 = ((sc_1 * p_0) > (sc_0 * p_1));
+    let k = (t0 ? (p_0*sc_0 + p_1*sc_1) : Math.hypot(p_0, p_1));
+    return (Math.sqrt(Math.max((((p_0*p_0 + p_1*p_1 + p_2*p_2) + (d_0 * d_0)) - ((2.0 * d_0) * k)), 0.0)) - d_1);
+  },
+  // pLink — from GLSL.link.src
+  link: (p, d, r) => {
+    let p_0 = p[0], p_1 = p[1], p_2 = p[2];
+    let d_0 = d[0], d_1 = d[1], d_2 = d[2];
+    let le = Math.max((((d_0 * 0.5) - d_1) - d_2), 0.0);
+    let q_0 = p_0, q_1 = Math.max((Math.abs(p_2) - le), 0.0), q_2 = p_1;
+    return (Math.hypot((Math.hypot(q_0, q_1) - d_1), q_2) - d_2);
+  },
+  // pPlane — from GLSL.plane.src
+  plane: (p, d, r) => {
+    let p_0 = p[0], p_1 = p[1], p_2 = p[2];
+    let d_0 = d[0], d_1 = d[1], d_2 = d[2];
+    return p_2;
+  },
+  // pFieldS — from GLSL.field.src
+  field: (p, d, r, $node) => {
+    const s = fields[($node && $node.fi) || 0];
+    let p_0 = p[0], p_1 = p[1], p_2 = p[2];
+    let d_0 = d[0], d_1 = d[1], d_2 = d[2];
+    let q_0 = (Math.abs(p_0) - d_0), q_1 = (Math.abs(p_1) - d_1), q_2 = (Math.abs(p_2) - d_2);
+    let box = (Math.hypot(Math.max(q_0, 0.0), Math.max(q_1, 0.0), Math.max(q_2, 0.0)) + Math.min(Math.max(q_0, Math.max(q_1, q_2)), 0.0));
+    if ((d_0 <= 0.0)) {
+      return 1e9;
+    }
+    let uvw_0 = Math.min(Math.max(((p_0 + d_0) / (2.0 * d_0)), 0.0), 1.0), uvw_1 = Math.min(Math.max(((p_1 + d_1) / (2.0 * d_1)), 0.0), 1.0), uvw_2 = Math.min(Math.max(((p_2 + d_2) / (2.0 * d_2)), 0.0), 1.0);
+    let v = (((sampleFieldUVW(s, uvw_2, uvw_1, uvw_0) * 2.0) - 1.0) * r);
+    return Math.max(v, box);
+  },
+  // pWire — from GLSL.wire.src
+  wire: (p, d, r, $node) => {
+    const w = wireSegments(wires[($node && $node.fi) || 0]);
+    let p_0 = p[0], p_1 = p[1], p_2 = p[2];
+    let d_0 = d[0], d_1 = d[1], d_2 = d[2];
+    let best = 1e18;
+    let n = segCount(w);
+    let i = 0;
+    for (; (i < n);) {
+      let A_0 = segAx(w, i), A_1 = segAy(w, i), A_2 = segAz(w, i);
+      let B_0 = segBx(w, i), B_1 = segBy(w, i), B_2 = segBz(w, i);
+      let rr_0 = segRA(w, i), rr_1 = segRB(w, i);
+      let ba_0 = (B_0 - A_0), ba_1 = (B_1 - A_1), ba_2 = (B_2 - A_2);
+      let pa_0 = (p_0 - A_0), pa_1 = (p_1 - A_1), pa_2 = (p_2 - A_2);
+      let l2 = (ba_0*ba_0 + ba_1*ba_1 + ba_2*ba_2);
+      let dr = (rr_0 - rr_1);
+      let a2 = (l2 - (dr * dr));
+      if ((a2 <= 0.0)) {
+        best = Math.min(best, Math.min((Math.hypot(pa_0, pa_1, pa_2) - rr_0), (Math.hypot((p_0 - B_0), (p_1 - B_1), (p_2 - B_2)) - rr_1)));
+      } else {
+        let il2 = (1.0 / l2);
+        let y = (pa_0*ba_0 + pa_1*ba_1 + pa_2*ba_2);
+        let z = (y - l2);
+        let cx_0 = ((pa_0 * l2) - (ba_0 * y)), cx_1 = ((pa_1 * l2) - (ba_1 * y)), cx_2 = ((pa_2 * l2) - (ba_2 * y));
+        let x2 = (cx_0*cx_0 + cx_1*cx_1 + cx_2*cx_2);
+        let y2 = ((y * y) * l2);
+        let z2 = ((z * z) * l2);
+        let k = (((Math.sign(dr) * dr) * dr) * x2);
+        let dd = 0.0;
+        if ((((Math.sign(z) * a2) * z2) > k)) {
+          dd = ((Math.sqrt((x2 + z2)) * il2) - rr_1);
+        } else {
+          if ((((Math.sign(y) * a2) * y2) < k)) {
+            dd = ((Math.sqrt((x2 + y2)) * il2) - rr_0);
+          } else {
+            dd = (((Math.sqrt(((x2 * a2) * il2)) + (y * dr)) * il2) - rr_0);
+          }
+        }
+        best = Math.min(best, dd);
+      }
+      i += 1;
+    }
+    return best;
+  },
+  // pSweep — from GLSL.sweep.src
+  sweep: (p, d, r, $node) => {
+    const w = sweepSegs(sweeps[($node && $node.fi) || 0]);
+    let p_0 = p[0], p_1 = p[1], p_2 = p[2];
+    let d_0 = d[0], d_1 = d[1], d_2 = d[2];
+    let best = 1e18;
+    let n = swCount(w);
+    let i = 0;
+    for (; (i < n);) {
+      let A_0 = swf(w,i,0), A_1 = swf(w,i,1), A_2 = swf(w,i,2);
+      let T_0 = swf(w,i,3), T_1 = swf(w,i,4), T_2 = swf(w,i,5);
+      let LS_0 = swf(w,i,6), LS_1 = swf(w,i,7), LS_2 = swf(w,i,8);
+      let M_0 = swf(w,i,9), M_1 = swf(w,i,10), M_2 = swf(w,i,11);
+      let cull = swf(w,i,12);
+      let pa_0 = (p_0 - A_0), pa_1 = (p_1 - A_1), pa_2 = (p_2 - A_2);
+      let proj = (pa_0*T_0 + pa_1*T_1 + pa_2*T_2);
+      let q = Math.min(Math.max(proj, 0.0), LS_0);
+      if (((Math.hypot((pa_0 - (T_0 * q)), (pa_1 - (T_1 * q)), (pa_2 - (T_2 * q))) - cull) < (best * M_1))) {
+        let U_0 = swf(w,i,13), U_1 = swf(w,i,14), U_2 = swf(w,i,15);
+        let V_0 = swf(w,i,16), V_1 = swf(w,i,17), V_2 = swf(w,i,18);
+        let K_0 = swf(w,i,19), K_1 = swf(w,i,20);
+        let TC_0 = swf(w,i,21), TC_1 = swf(w,i,22);
+        let E_0 = swf(w,i,23), E_1 = swf(w,i,24);
+        let C_0 = swf(w,i,25), C_1 = swf(w,i,26), C_2 = swf(w,i,27);
+        let kind = swf(w,i,28);
+        let sp_0 = swf(w,i,29), sp_1 = swf(w,i,30), sp_2 = swf(w,i,31);
+        let t = (q / LS_0);
+        let oStart = (-(proj + E_0));
+        let oEnd = (proj - (LS_0 + E_1));
+        let atA = (oStart > oEnd);
+        let past = (atA ? oStart : oEnd);
+        const t0 = (C_0 > 0.5);
+        const t1 = (C_1 > 0.5);
+        let capped = Math.max((t0 ? oStart : (-1e30)), (t1 ? oEnd : (-1e30)));
+        let s = (LS_1 + ((LS_2 - LS_1) * t));
+        let u0 = (pa_0*U_0 + pa_1*U_1 + pa_2*U_2);
+        let v0 = (pa_0*V_0 + pa_1*V_1 + pa_2*V_2);
+        let u = u0;
+        let v = v0;
+        if ((M_0 != 0.0)) {
+          let a = (M_0 * t);
+          let ca = Math.cos(a);
+          let sa = Math.sin(a);
+          u = ((u0 * ca) + (v0 * sa));
+          v = ((v0 * ca) - (u0 * sa));
+        }
+        const t2 = (s > 1e-9);
+        let d2 = (t2 ? (sweepSection(kind, sp_0, sp_1, sp_2, (u / s), (v / s)) * s) : Math.hypot(u, v));
+        let raw;
+        if ((past > 0.0)) {
+          const t3 = (d2 <= 0.0);
+          raw = (t3 ? past : Math.hypot(d2, past));
+        } else {
+          raw = Math.max(d2, capped);
+        }
+        best = Math.min(best, (raw / M_1));
+        if ((C_2 > 0.5)) {
+          let oJ = (proj - LS_0);
+          if (((Math.hypot(u0, v0, oJ) - M_2) < (best * M_1))) {
+            let uj = u0;
+            let vj = v0;
+            if ((M_0 != 0.0)) {
+              let ca = Math.cos(M_0);
+              let sa = Math.sin(M_0);
+              uj = ((u0 * ca) + (v0 * sa));
+              vj = ((v0 * ca) - (u0 * sa));
+            }
+            let sJ = LS_2;
+            let pk = ((uj * K_0) + (vj * K_1));
+            let pm = ((vj * K_0) - (uj * K_1));
+            let beta;
+            let off;
+            if ((oJ < 0.0)) {
+              beta = pm;
+              off = oJ;
+            } else {
+              if ((((pm * TC_1) - (oJ * TC_0)) >= 0.0)) {
+                beta = Math.hypot(pm, oJ);
+                off = 0.0;
+              } else {
+                beta = ((pm * TC_0) + (oJ * TC_1));
+                off = ((oJ * TC_0) - (pm * TC_1));
+              }
+            }
+            let p2 = (sweepSection(kind, sp_0, sp_1, sp_2, (((pk * K_0) - (beta * K_1)) / sJ), (((pk * K_1) + (beta * K_0)) / sJ)) * sJ);
+            const t4 = (off == 0.0);
+            let c = ((t4 ? p2 : Math.hypot(Math.max(p2, 0.0), Math.abs(off))) / M_1);
+            best = Math.min(best, c);
+          }
+        }
+      }
+      i += 1;
+    }
+    return best;
+  },
+  // pProfile — from GLSL.profile.src
+  profile: (p, d, r, $node) => {
+    const o = outlineEdges(profiles[($node && $node.fi) || 0]);
+    let p_0 = p[0], p_1 = p[1], p_2 = p[2];
+    let d_0 = d[0], d_1 = d[1], d_2 = d[2];
+    let dd = 1e18;
+    let ins = false;
+    let n = edgeCount(o);
+    let i = 0;
+    for (; (i < n);) {
+      let A_0 = edgeAx(o, i), A_1 = edgeAy(o, i);
+      let B_0 = edgeBx(o, i), B_1 = edgeBy(o, i);
+      let e_0 = (B_0 - A_0), e_1 = (B_1 - A_1);
+      let w_0 = (p_0 - A_0), w_1 = (p_1 - A_1);
+      const t0 = Math.min(Math.max(((w_0*e_0 + w_1*e_1) / (e_0*e_0 + e_1*e_1)), 0.0), 1.0);
+      let q_0 = (w_0 - (e_0 * t0)), q_1 = (w_1 - (e_1 * t0));
+      dd = Math.min(dd, (q_0*q_0 + q_1*q_1));
+      let c1 = (p_1 >= A_1);
+      let c2 = (p_1 < B_1);
+      let cr = ((e_0 * w_1) - (e_1 * w_0));
+      if ((((c1 && c2) && (cr > 0.0)) || (((!c1) && (!c2)) && (cr < 0.0)))) {
+        ins = (!ins);
+      }
+      i += 1;
+    }
+    let da = ((ins ? (-1.0) : 1.0) * Math.sqrt(dd));
+    let db = (Math.abs(p_2) - d_2);
+    return (Math.min(Math.max(da, db), 0.0) + Math.hypot(Math.max(da, 0.0), Math.max(db, 0.0)));
+  },
+  // pConstruct — from GLSL.construct.src
+  construct: (p, d, r, $node) => {
+    const c = conItems(constructs[($node && $node.fi) || 0]);
+    let p_0 = p[0], p_1 = p[1], p_2 = p[2];
+    let d_0 = d[0], d_1 = d[1], d_2 = d[2];
+    let best = 1e18;
+    let n = conCount(c);
+    let i = 0;
+    for (; (i < n);) {
+      let bc_0 = conf(c,i,0), bc_1 = conf(c,i,1), bc_2 = conf(c,i,2);
+      let br = conf(c,i,3);
+      let bd = (Math.hypot((p_0 - bc_0), (p_1 - bc_1), (p_2 - bc_2)) - br);
+      if ((bd < best)) {
+        let org_0 = conf(c,i,4), org_1 = conf(c,i,5), org_2 = conf(c,i,6);
+        let qv_0 = conf(c,i,7), qv_1 = conf(c,i,8), qv_2 = conf(c,i,9);
+        let qw = conf(c,i,10);
+        let dm_0 = conf(c,i,11), dm_1 = conf(c,i,12), dm_2 = conf(c,i,13);
+        let ms_0 = conf(c,i,14), ms_1 = conf(c,i,15), ms_2 = conf(c,i,16);
+        let pa_0 = (p_0 - org_0), pa_1 = (p_1 - org_1), pa_2 = (p_2 - org_2);
+        let t_0 = ((qv_1 * pa_2) - (qv_2 * pa_1)), t_1 = ((qv_2 * pa_0) - (qv_0 * pa_2)), t_2 = ((qv_0 * pa_1) - (qv_1 * pa_0));
+        let lp_0 = (pa_0 + (((t_0 * qw) + ((qv_1 * t_2) - (qv_2 * t_1))) * 2.0)), lp_1 = (pa_1 + (((t_1 * qw) + ((qv_2 * t_0) - (qv_0 * t_2))) * 2.0)), lp_2 = (pa_2 + (((t_2 * qw) + ((qv_0 * t_1) - (qv_1 * t_0))) * 2.0));
+        best = smin(best, Math.max(constructMass(ms_0, lp_0, lp_1, lp_2, dm_0, dm_1, dm_2, ms_1), (bd + ms_2)), ms_2);
+      }
+      i += 1;
+    }
+    return best;
+  },
+};
+// >>> generated twins
+
 const PRIMS = {
   sphere: {
     name: 'Sphere', round: false,
     dims: [['Radius', 0.5, 80, 0.5]],
     def: [10, 0, 0],
-    js: (p, d) => Math.hypot(p[0], p[1], p[2]) - d[0],
+    js: TWINS.sphere,
     ext: d => [d[0], d[0], d[0]]
   },
   box: {
@@ -600,44 +1484,28 @@ const PRIMS = {
     dims: [['Size X', 0.5, 160, 0.5], ['Size Y', 0.5, 160, 0.5],
            ['Size Z', 0.5, 160, 0.5]],
     def: [20, 20, 20],
-    js: (p, d, r) => {
-      const b = [Math.max(d[0] * .5 - r, 0), Math.max(d[1] * .5 - r, 0),
-                 Math.max(d[2] * .5 - r, 0)];
-      const q = [Math.abs(p[0]) - b[0], Math.abs(p[1]) - b[1],
-                 Math.abs(p[2]) - b[2]];
-      const o = Math.hypot(Math.max(q[0], 0), Math.max(q[1], 0), Math.max(q[2], 0));
-      return o + Math.min(Math.max(q[0], Math.max(q[1], q[2])), 0) - r;
-    },
+    js: TWINS.box,
     ext: d => [d[0] / 2, d[1] / 2, d[2] / 2]
   },
   cylinder: {
     name: 'Cylinder', round: true,
     dims: [['Radius', 0.5, 80, 0.5], ['Height', 0.5, 160, 0.5]],
     def: [10, 24, 0],
-    js: (p, d, r) => {
-      const rr = Math.max(d[0] - r, 0), hh = Math.max(d[1] * .5 - r, 0);
-      const qx = Math.hypot(p[0], p[1]) - rr, qy = Math.abs(p[2]) - hh;
-      return Math.min(Math.max(qx, qy), 0) +
-             Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) - r;
-    },
+    js: TWINS.cylinder,
     ext: d => [d[0], d[0], d[1] / 2]
   },
   capsule: {
     name: 'Capsule', round: false,
     dims: [['Radius', 0.5, 60, 0.5], ['Length', 1, 200, 0.5]],
     def: [7, 40, 0],
-    js: (p, d) => {
-      const hh = Math.max(d[1] * .5 - d[0], 0);
-      const z = p[2] - Math.min(Math.max(p[2], -hh), hh);
-      return Math.hypot(p[0], p[1], z) - d[0];
-    },
+    js: TWINS.capsule,
     ext: d => [d[0], d[0], Math.max(d[1] / 2, d[0])]
   },
   torus: {
     name: 'Torus', round: false,
     dims: [['Ring radius', 1, 80, 0.5], ['Tube radius', 0.4, 40, 0.25]],
     def: [14, 4, 0],
-    js: (p, d) => Math.hypot(Math.hypot(p[0], p[1]) - d[0], p[2]) - d[1],
+    js: TWINS.torus,
     ext: d => [d[0] + d[1], d[0] + d[1], d[1]]
   },
   cone: {
@@ -646,18 +1514,7 @@ const PRIMS = {
            ['Height', 0.5, 160, 0.5]],
     def: [14, 0, 28],
     // iq's capped cone: h is the half height, r1 the -Z cap, r2 the +Z cap
-    js: (p, d, r) => {
-      const r1 = Math.max(d[0] - r, 0), r2 = Math.max(d[1] - r, 0);
-      const h = Math.max(d[2] * .5 - r, 0);
-      const qx = Math.hypot(p[0], p[1]), qy = p[2];
-      const k1x = r2, k1y = h, k2x = r2 - r1, k2y = 2 * h;
-      const cax = qx - Math.min(qx, qy < 0 ? r1 : r2), cay = Math.abs(qy) - h;
-      const kk = k2x * k2x + k2y * k2y || 1e-9;
-      const t = Math.min(Math.max(((k1x - qx) * k2x + (k1y - qy) * k2y) / kk, 0), 1);
-      const cbx = qx - k1x + k2x * t, cby = qy - k1y + k2y * t;
-      const s = (cbx < 0 && cay < 0) ? -1 : 1;
-      return s * Math.sqrt(Math.min(cax * cax + cay * cay, cbx * cbx + cby * cby)) - r;
-    },
+    js: TWINS.cone,
     ext: d => [Math.max(d[0], d[1]), Math.max(d[0], d[1]), d[2] / 2]
   },
   ellipsoid: {
@@ -670,14 +1527,7 @@ const PRIMS = {
            ['Size Z', 0.5, 160, 0.5]],
     def: [30, 18, 14],
     // iq's bound: not exact, so the marcher takes slightly shorter steps
-    js: (p, d) => {
-      const rx = Math.max(d[0] * .5, 1e-3), ry = Math.max(d[1] * .5, 1e-3),
-            rz = Math.max(d[2] * .5, 1e-3);
-      const k0 = Math.hypot(p[0] / rx, p[1] / ry, p[2] / rz);
-      const k1 = Math.hypot(p[0] / (rx * rx), p[1] / (ry * ry), p[2] / (rz * rz));
-      if (k1 < 1e-6) return -Math.min(rx, ry, rz);
-      return k0 * (k0 - 1) / k1;
-    },
+    js: TWINS.ellipsoid,
     ext: d => [d[0] / 2, d[1] / 2, d[2] / 2]
   },
   prism: {
@@ -688,21 +1538,7 @@ const PRIMS = {
     dims: [['Radius', 0.5, 80, 0.5], ['Height', 0.5, 160, 0.5],
            ['Sides', 3, 12, 1, '']],
     def: [12, 24, 6],
-    js: (p, d, r) => {
-      const n = Math.min(Math.max(Math.round(d[2]), 3), 12);
-      const ang = Math.PI / n;
-      const R = Math.max(d[0] - r / Math.cos(ang), 0);
-      const hh = Math.max(d[1] * .5 - r, 0);
-      let a = Math.atan2(p[1], p[0]) + ang;
-      a = a - 2 * ang * Math.floor(a / (2 * ang)) - ang;   // GLSL mod
-      const L = Math.hypot(p[0], p[1]);
-      const qx = L * Math.cos(a), qy = L * Math.sin(a);
-      const ap = R * Math.cos(ang), hl = R * Math.sin(ang);
-      const e = Math.hypot(qx - ap, qy - Math.min(Math.max(qy, -hl), hl));
-      const wx = qx < ap ? -e : e, wy = Math.abs(p[2]) - hh;
-      return Math.min(Math.max(wx, wy), 0)
-           + Math.hypot(Math.max(wx, 0), Math.max(wy, 0)) - r;
-    },
+    js: TWINS.prism,
     ext: d => [d[0], d[0], d[1] / 2]
   },
   pyramid: {
@@ -720,25 +1556,7 @@ const PRIMS = {
     name: 'Pyramid', round: false,
     dims: [['Base', 0.5, 160, 0.5], ['Height', 0.5, 160, 0.5]],
     def: [24, 26, 0],
-    js: (p, d) => {
-      const b = Math.max(d[0], 1e-4), H = Math.max(d[1], 1e-4);
-      let Px = p[0] / b, Py = (p[2] + H * .5) / b, Pz = p[1] / b;
-      const h = H / b, m2 = h * h + 0.25;
-      Px = Math.abs(Px); Pz = Math.abs(Pz);
-      if (Pz > Px) { const s = Px; Px = Pz; Pz = s; }
-      Px -= 0.5; Pz -= 0.5;
-      const qx = Pz, qy = h * Py - 0.5 * Px, qz = h * Px + 0.5 * Py;
-      const s = Math.max(-qx, 0);
-      const t = Math.min(Math.max((qy - 0.5 * Pz) / (m2 + 0.25), 0), 1);
-      const A = m2 * (qx + s) * (qx + s) + qy * qy;
-      const B = m2 * (qx + 0.5 * t) * (qx + 0.5 * t) + (qy - m2 * t) * (qy - m2 * t);
-      const d2 = Math.min(qy, -qx * m2 - qy * 0.5) > 0 ? 0 : Math.min(A, B);
-      const lat = Math.sqrt((d2 + qz * qz) / m2);
-      const e2 = Math.hypot(Math.max(Px, 0), Math.max(Pz, 0)) + Math.min(Px, 0);
-      const base = Math.hypot(Math.max(e2, 0), Py);
-      const m = Math.min(lat, base);
-      return (qz < 0 && Py > 0 ? -m : m) * b;
-    },
+    js: TWINS.pyramid,
     ext: d => [d[0] / 2, d[0] / 2, d[1] / 2]
   },
   octa: {
@@ -748,18 +1566,7 @@ const PRIMS = {
     name: 'Octahedron', round: true,
     dims: [['Size', 0.5, 100, 0.5]],
     def: [16, 0, 0],
-    js: (p, d, r) => {
-      const s = Math.max(d[0] - r * 1.73205081, 0);
-      const px = Math.abs(p[0]), py = Math.abs(p[1]), pz = Math.abs(p[2]);
-      const m = px + py + pz - s;
-      let qx, qy, qz;
-      if (3 * px < m) { qx = px; qy = py; qz = pz; }
-      else if (3 * py < m) { qx = py; qy = pz; qz = px; }
-      else if (3 * pz < m) { qx = pz; qy = px; qz = py; }
-      else return m * 0.57735027 - r;
-      const k = Math.min(Math.max(0.5 * (qz - qy + s), 0), s);
-      return Math.hypot(qx, qy - s + k, qz - k) - r;
-    },
+    js: TWINS.octa,
     ext: d => [d[0], d[0], d[0]]
   },
   dome: {
@@ -768,15 +1575,7 @@ const PRIMS = {
     name: 'Dome', round: false,
     dims: [['Radius', 0.5, 80, 0.5], ['Cut height', -80, 80, 0.5]],
     def: [16, 0, 0],
-    js: (p, d) => {
-      const R = Math.max(d[0], 1e-4);
-      const h = Math.min(Math.max(d[1], -R), R);
-      const w = Math.sqrt(Math.max(R * R - h * h, 0));
-      const qx = Math.hypot(p[0], p[1]), qy = p[2];
-      const s = Math.max((h - R) * qx * qx + w * w * (h + R - 2 * qy), h * qx - w * qy);
-      return s < 0 ? Math.hypot(qx, qy) - R
-           : qx < w ? h - qy : Math.hypot(qx - w, qy - h);
-    },
+    js: TWINS.dome,
     ext: d => {
       const R = Math.max(d[0], 1e-4), h = Math.min(Math.max(d[1], -R), R);
       const w = h >= 0 ? R : Math.sqrt(Math.max(R * R - h * h, 0));
@@ -790,14 +1589,7 @@ const PRIMS = {
     dims: [['Ring radius', 1, 80, 0.5], ['Tube radius', 0.4, 40, 0.25],
            ['Sweep', 10, 360, 5, '°']],
     def: [14, 4, 180],
-    js: (p, d) => {
-      const th = Math.min(Math.max(d[2], 10), 360) * 0.00872664626;
-      const sx = Math.sin(th), sy = Math.cos(th);
-      const px = Math.abs(p[0]), py = p[1], pz = p[2];
-      const k = (sy * px > sx * py) ? px * sx + py * sy : Math.hypot(px, py);
-      return Math.sqrt(Math.max(px * px + py * py + pz * pz
-             + d[0] * d[0] - 2 * d[0] * k, 0)) - d[1];
-    },
+    js: TWINS.arc,
     ext: d => [d[0] + d[1], d[0] + d[1], d[1]]
   },
   link: {
@@ -807,11 +1599,7 @@ const PRIMS = {
     dims: [['Length', 2, 120, 0.5], ['Ring radius', 0.5, 40, 0.25],
            ['Tube radius', 0.3, 20, 0.25]],
     def: [30, 6, 2.5],
-    js: (p, d) => {
-      const le = Math.max(d[0] * .5 - d[1] - d[2], 0);
-      const qx = p[0], qy = Math.max(Math.abs(p[2]) - le, 0), qz = p[1];
-      return Math.hypot(Math.hypot(qx, qy) - d[1], qz) - d[2];
-    },
+    js: TWINS.link,
     ext: d => [d[1] + d[2], d[2], Math.max(d[0] / 2, d[1] + d[2])]
   },
   plane: {
@@ -819,7 +1607,7 @@ const PRIMS = {
     dims: [],
     def: [0, 0, 0],
     // solid below local +Z: as a Cut it shaves everything above the plane
-    js: p => p[2],
+    js: TWINS.plane,
     ext: () => [1e4, 1e4, 1e4]
   },
   field: {
@@ -833,16 +1621,70 @@ const PRIMS = {
     def: [0, 0, 0],
     // GLSL ES 3.0 allows a sampler as a function parameter, so one function
     // serves every slot and the generated call names its slot literally.
-    js: (p, d, r, n) => {
-      const f = fields[(n && n.fi) || 0];
-      if (!f) return 1e9;
-      const q = [Math.abs(p[0]) - d[0], Math.abs(p[1]) - d[1],
-                 Math.abs(p[2]) - d[2]];
-      const box = Math.hypot(Math.max(q[0], 0), Math.max(q[1], 0),
-                             Math.max(q[2], 0))
-                + Math.min(Math.max(q[0], q[1], q[2]), 0);
-      return Math.max(sampleField(f, p[0], p[1], p[2]), box);
-    },
+    js: TWINS.field,
+    ext: d => [d[0] || 1, d[1] || 1, d[2] || 1]
+  },
+
+  // A closed 2D outline given a thickness -- the shape a sketch turns into.
+  // The outline is not in the node: it is in `profiles`, and `fi` says which,
+  // exactly as a baked field works. What the node carries is the half-extent
+  // of the outline and half the thickness, because that is what bounds are
+  // computed from.
+  //
+  // No rounding: the outline already says what its corners do. Rotating the
+  // node is what puts the extrusion somewhere other than up the Z axis, which
+  // is how a face found in a tilted plane arrives here.
+  // A drawn path given a thickness that may vary along it. Like `profile` and
+  // `field`, the data is on the document and `fi` says which; unlike them, the
+  // dims are purely the bounds, since a wire's shape is entirely in its points.
+  wire: {
+    name: 'Wire', round: false, baked: true,
+    dims: [['Half width', 0.5, 200, 0.5], ['Half depth', 0.5, 200, 0.5],
+           ['Half height', 0.5, 200, 0.5]],
+    // matches DEFAULT_WIRE, so a wire node with no data behind it is a 20 mm
+    // tapered run rather than nothing at all
+    def: [12, 2, 2],
+    js: TWINS.wire,
+    ext: d => [d[0] || 1, d[1] || 1, d[2] || 1]
+  },
+  // A section dragged along a path. Its dims are purely the bounds: everything
+  // about the shape is in the packed segments on the document.
+  sweep: {
+    name: 'Sweep', round: false, baked: true,
+    dims: [['Half width', 0.5, 400, 0.5], ['Half depth', 0.5, 400, 0.5],
+           ['Half height', 0.5, 400, 0.5]],
+    def: [13, 3, 3],
+    js: TWINS.sweep,
+    ext: d => [d[0] || 1, d[1] || 1, d[2] || 1]
+  },
+  profile: {
+    name: 'Profile', round: false, baked: true,
+    dims: [['Half width', 0.5, 200, 0.5], ['Half depth', 0.5, 200, 0.5],
+           ['Half height', 0.25, 100, 0.25]],
+    // the defaults match DEFAULT_OUTLINE, so a profile node with no outline
+    // behind it is a 20 x 20 x 12 mm slab rather than nothing at all
+    def: [10, 10, 6],
+    js: TWINS.profile,
+    ext: d => [d[0] || 1, d[1] || 1, d[2] || 1]
+  },
+  // Masses hung on a skeleton of connectors. The skeleton is on the document
+  // and `fi` says which; the dims are purely the bounds, because everything
+  // about the shape -- and everything about the pose -- is in the items
+  // `SinterConstruct.pack()` resolved.
+  //
+  // `exact: false` for the reason a blend always breaks it: every joint folds
+  // with `smin`, and inside a blend shell the gradient is under one. It stays
+  // 1-Lipschitz, which is what the marcher actually rests on, because rigid
+  // frames and exact masses cannot make it anything else -- but it is a bound
+  // and says so.
+  construct: {
+    name: 'Construct', round: false, baked: true, exact: false,
+    dims: [['Half width', 0.5, 400, 0.5], ['Half depth', 0.5, 400, 0.5],
+           ['Half height', 0.5, 400, 0.5]],
+    // matches DEFAULT_CONSTRUCT, so a construct node with no rig behind it is
+    // a small armature rather than nothing at all
+    def: [13, 9, 22.5],
+    js: TWINS.construct,
     ext: d => [d[0] || 1, d[1] || 1, d[2] || 1]
   }
 };
@@ -862,16 +1704,24 @@ function dimUnit(t, i) {
   return dim && dim[4] !== undefined ? dim[4] : ' mm';
 }
 
-function smin(a, b, k) {
-  if (k <= 0) return Math.min(a, b);
-  const h = Math.min(Math.max(0.5 + 0.5 * (b - a) / k, 0), 1);
-  return b + (a - b) * h - k * h * (1 - h);
+// What goes in the round slot. Every primitive but one puts its corner
+// rounding there; a baked field has no rounding and puts its *range* there
+// instead, because the range has to reach the shader somehow and that uniform
+// is spare. That used to be prose a consumer had to remember -- viewer.js
+// carried its own copy of the rule, and packing `round` there by mistake gives
+// a field multiplied by zero, which draws as its bounding box and looks
+// exactly like a texture that never arrived. Now both halves ask here.
+function roundSlot(n) {
+  if (n && n.t === 'field')
+    return ((fields[(n && n.fi) || 0] || {}).range) || 0;
+  return (n && n.round) || 0;
 }
-function smax(a, b, k) {
-  if (k <= 0) return Math.max(a, b);
-  const h = Math.min(Math.max(0.5 - 0.5 * (b - a) / k, 0), 1);
-  return b + (a - b) * h + k * h * (1 - h);
-}
+
+// smin and smax are generated from GLSL.FOLD, above. invRot is not, and is
+// the one deliberate exception in the file: its GLSL returns a vec3, and a JS
+// twin that returned an array would allocate once per node per sample -- a
+// hundred million times in a single mesh. It writes into `out` instead, and
+// check-glmesh compares the two ends of it per sample on a rotated scene.
 // world -> local: the shape is rotated by Rz*Ry*Rx, so undo it in reverse
 function invRot(x, y, z, e, out) {
   let c = Math.cos(e[2]), s = Math.sin(e[2]);
@@ -901,7 +1751,7 @@ function sceneSDF(plan, x, y, z) {
       let pz = n.mz ? Math.abs(z) : z;
       e[0] = n.r[0] * RAD; e[1] = n.r[1] * RAD; e[2] = n.r[2] * RAD;
       invRot(px - n.p[0], py - n.p[1], pz - n.p[2], e, q);
-      const di = PRIMS[n.t].js(q, n.d, n.round || 0, n);
+      const di = PRIMS[n.t].js(q, n.d, roundSlot(n), n);
       if (n.op === 'add') d = smin(d, di, n.k);
       else if (n.op === 'cut') d = smax(d, -di, n.k);
       else d = smax(d, di, n.k);
@@ -988,9 +1838,16 @@ function surfaceNets(vol, nx, ny, nz, ox, oy, oz, res) {
         }
       }
   const tris = [];
+  // Wound so that cross(b - a, c - a) points *out* of the solid, which is what
+  // the STL format means by a facet normal and what anything shading or
+  // back-face culling this mesh will assume. It used to come out the other way
+  // round on every triangle: slicers flood-fill orientation themselves so the
+  // prints were fine, and the viewer lit every surface from the wrong side
+  // without ever looking obviously broken. `flip` follows the sign of the
+  // sample the crossing edge leaves behind.
   function quad(a, b, c, d2, flip) {
     if (a < 0 || b < 0 || c < 0 || d2 < 0) return;
-    if (flip) tris.push(a, c, b, a, d2, c); else tris.push(a, b, c, a, c, d2);
+    if (flip) tris.push(a, b, c, a, c, d2); else tris.push(a, c, b, a, d2, c);
   }
   for (let i = 0; i < nx; i++)
     for (let j = 0; j < ny; j++)
@@ -1016,6 +1873,52 @@ function surfaceNets(vol, nx, ny, nz, ox, oy, oz, res) {
         }
       }
   return { positions: new Float32Array(verts), indices: new Uint32Array(tris) };
+}
+
+// A plan, meshed. The grid is derived from the scene's own bounds, filled by
+// `opts.sample`, and walked by surfaceNets.
+//
+// The filling is pluggable and the default is this file's own JS evaluation,
+// which is the point: it is one SDF call per grid corner and essentially all
+// of the cost, so it is the half worth moving to a GPU. `glmesh.js` provides a
+// sampler that does exactly that, with the same signature, and nothing here
+// knows whether it was used -- which is what keeps this file free of any
+// notion that a GPU exists.
+//
+//   SinterForm.mesh(plan)                              // JS, always works
+//   SinterForm.mesh(plan, { sample: SinterGLMesh.sampler() })   // on the GPU
+//
+// `res` is the grid spacing in mm. `maxSamples` is a guard, not a policy: a
+// grid is cubic in 1/res and it is easy to ask for a hundred gigabytes by
+// dragging a slider.
+function mesh(plan, opts) {
+  opts = opts || {};
+  const res = opts.res === undefined ? 0.6 : opts.res;
+  const maxSamples = opts.maxSamples === undefined ? 24e6 : opts.maxSamples;
+  const nodes = [];
+  for (const part of plan) for (const n of part.nodes) nodes.push(n);
+  const B = opts.bounds || sceneBounds(nodes);
+  if (!B) return null;
+  const pad = 2 * res;
+  const lo = [B.lo[0] - pad, B.lo[1] - pad, B.lo[2] - pad];
+  const n = [0, 1, 2].map(i => Math.ceil((B.hi[i] - B.lo[i] + 2 * pad) / res) + 1);
+  const total = n[0] * n[1] * n[2];
+  if (total > maxSamples)
+    throw new Error(`mesh: ${(total / 1e6).toFixed(1)} M samples at ${res} mm`
+      + ` exceeds maxSamples (${(maxSamples / 1e6).toFixed(0)} M)`);
+  const vol = new Float32Array(total);
+  if (opts.sample) {
+    opts.sample(plan, lo, n, res, vol);
+  } else {
+    let k = 0;
+    for (let i = 0; i < n[0]; i++)
+      for (let j = 0; j < n[1]; j++)
+        for (let m = 0; m < n[2]; m++)
+          vol[k++] = sceneSDF(plan, lo[0] + i * res, lo[1] + j * res, lo[2] + m * res);
+  }
+  const out = surfaceNets(vol, n[0], n[1], n[2], lo[0], lo[1], lo[2], res);
+  out.lo = lo; out.n = n; out.res = res; out.samples = total;
+  return out;
 }
 
 function meshToSTL(m, header) {
@@ -1058,9 +1961,19 @@ const SinterForm = {
   PRIMS, PRIM_KEYS, OPS, RAD, dimIsLength, dimUnit,
   get fields() { return fields; },
   set fields(v) { fields = v; },
+  get profiles() { return profiles; },
+  set profiles(v) { profiles = v; },
+  get wires() { return wires; },
+  set wires(v) { wires = v; },
+  get sweeps() { return sweeps; },
+  set sweeps(v) { sweeps = v; },
+  get constructs() { return constructs; },
+  set constructs(v) { constructs = v; },
   decodeField, encodeField, sampleField,
-  smin, smax, invRot,
-  sceneSDF, sceneBounds, surfaceNets, meshToSTL
+  polygonSDF, profileExtent, wireExtent, slotItems, slotList, SWEEP_STRIDE,
+  CON_STRIDE,
+  smin, smax, invRot, roundSlot,
+  sceneSDF, sceneBounds, surfaceNets, mesh, meshToSTL
 };
 if (typeof module !== 'undefined' && module.exports) module.exports = SinterForm;
 root.SinterForm = SinterForm;
@@ -1140,7 +2053,10 @@ const GLSL = {
   vec2 k1 = vec2(r2, h);
   vec2 k2 = vec2(r2 - r1, 2.0*h);
   vec2 ca = vec2(q.x - min(q.x, (q.y < 0.0) ? r1 : r2), abs(q.y) - h);
-  vec2 cb = q - k1 + k2*clamp(dot(k1 - q, k2)/dot(k2, k2), 0.0, 1.0);
+  // dot(k2, k2) is zero for a cone with equal radii and no height left after
+  // rounding -- degenerate, but reachable from the sliders, and it used to be
+  // guarded on the JS side only. Guarding the definition guards both.
+  vec2 cb = q - k1 + k2*clamp(dot(k1 - q, k2)/max(dot(k2, k2), 1e-9), 0.0, 1.0);
   float s = (cb.x < 0.0 && ca.y < 0.0) ? -1.0 : 1.0;
   return s*sqrt(min(dot(ca, ca), dot(cb, cb))) - r;
 }` },
@@ -1225,23 +2141,441 @@ const GLSL = {
 }` },
   plane: { fn: 'pPlane',
     src: 'float pPlane(vec3 p, vec3 d, float r){ return p.z; }' },
+  // The odd one out twice over. It takes a sampler, which `call` knows about
+  // -- and it takes the field's **range** through the slot every other
+  // primitive uses for its corner rounding, because a baked field has no
+  // rounding and the range has to arrive somehow. The JS twin reads that off
+  // the field object instead, so nothing in a plan carries it and a consumer
+  // has to know to pack it. Pack `round` there by mistake and the sample comes
+  // back multiplied by zero: max(0, box), which draws as the bounding box and
+  // looks exactly like a texture that never arrived.
+  // `fieldSample` is an INTRINSIC: build-twins.mjs substitutes a JS
+  // implementation for it rather than translating this body, because reading a
+  // grid is the one thing a shader and JavaScript genuinely do differently --
+  // one asks the sampler hardware, the other interpolates by hand. Everything
+  // around it is ordinary GLSL and is translated like any other primitive.
+  //
+  // Samples sit on the grid *corners*, spanning the box exactly, which is what
+  // sampleField and every baker in this repository mean. A texture's own
+  // coordinates put sample i at texel centre (i + 0.5)/n, so the mapping is
+  // corrected here rather than at each call site -- without it the shader
+  // reads a field stretched by half a texel at each end.
   field: { fn: 'pFieldS', sampler: true,
-    src: `float pFieldS(sampler3D s, vec3 p, vec3 d, float r){
+    src: `float fieldSample(sampler3D s, float u, float v, float w){
+  vec3 sz = vec3(textureSize(s, 0));
+  vec3 t = (vec3(u, v, w)*(sz - 1.0) + 0.5)/sz;
+  return texture(s, clamp(t, 0.0, 1.0)).r;
+}
+
+float pFieldS(sampler3D s, vec3 p, vec3 d, float r){
   vec3 q = abs(p) - d;
   float box = length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
   if (d.x <= 0.0) return 1e9;
   // the grid is stored with z fastest, so the texture is nz wide by ny by nx
   // and the lookup is (z, y, x), not (x, y, z)
-  vec3 uvw = (p + d)/(2.0*d);
-  float v = (texture(s, clamp(uvw.zyx, 0.0, 1.0)).r*2.0 - 1.0)*r;
+  vec3 uvw = clamp((p + d)/(2.0*d), 0.0, 1.0);
+  float v = (fieldSample(s, uvw.z, uvw.y, uvw.x)*2.0 - 1.0)*r;
   return max(v, box);
+}` },
+
+  // A wire: the drawn curves given a thickness that may vary as it goes.
+  //
+  // The element is iq's round cone -- the convex hull of a sphere at each end
+  // -- which is what a segment with a different radius at each end actually
+  // is. It reduces to a capsule when the radii match, so a constant-thickness
+  // wire costs nothing extra, and it is exact where a lerped radius is not: a
+  // tapered surface is slanted, so measuring perpendicular to the axis
+  // over-reports by the secant of the slant. This formula measures to the
+  // slant.
+  //
+  // Consecutive segments share an endpoint, so the sphere there fills the
+  // joint and there is no corner case to write. That is the whole reason a
+  // wire is simpler than a sweep: a ball revolved about any axis is the same
+  // ball, so the turn direction never matters.
+  //
+  // Rolled, like `profile`, with the segments reached through intrinsics --
+  // `slotDecls` unrolls this same loop for the GPU, from this source.
+  wire: { fn: 'pWire', slotted: true, spec: true,
+    src: `float pWire(polyline w, vec3 p, vec3 d, float r){
+  float best = 1e18;
+  int n = segCount(w);
+  for (int i = 0; i < n; i++) {
+    vec3 A = segA(w, i);
+    vec3 B = segB(w, i);
+    vec2 rr = segR(w, i);
+    vec3 ba = B - A;
+    vec3 pa = p - A;
+    float l2 = dot(ba, ba);
+    float dr = rr.x - rr.y;
+    float a2 = l2 - dr*dr;
+    // One sphere swallowing the other -- or a zero-length segment -- has no
+    // tangent cone between them, and the hull is just the larger sphere. min
+    // of the two gives exactly that, since the contained one is never nearer.
+    if (a2 <= 0.0) {
+      best = min(best, min(length(pa) - rr.x, length(p - B) - rr.y));
+    } else {
+      float il2 = 1.0/l2;
+      float y = dot(pa, ba);
+      float z = y - l2;
+      vec3 cx = pa*l2 - ba*y;
+      float x2 = dot(cx, cx);
+      float y2 = y*y*l2;
+      float z2 = z*z*l2;
+      float k = sign(dr)*dr*dr*x2;
+      float dd = 0.0;
+      if (sign(z)*a2*z2 > k) dd = sqrt(x2 + z2)*il2 - rr.y;
+      else if (sign(y)*a2*y2 < k) dd = sqrt(x2 + y2)*il2 - rr.x;
+      else dd = (sqrt(x2*a2*il2) + y*dr)*il2 - rr.x;
+      best = min(best, dd);
+    }
+  }
+  return best;
+}` },
+
+  // A sweep: a section dragged along a path, at a scale and a roll that may
+  // both vary as it goes. The largest of the slotted primitives, and a direct
+  // transcription of sweep.js's evaluator -- which is the point, because that
+  // evaluator is the one check-sweep holds against tangent fillets, an exact
+  // torus and the kernel's own cone in a slanted frame.
+  //
+  // Each item is one path segment carrying its own frame, span, scale, roll,
+  // caps and turn. The section travels with every segment rather than once per
+  // slot: a few floats repeated, and the compiler folds the branch away since
+  // the kind arrives as a literal.
+  //
+  // Two things here are not obvious and both were bugs first. The rounded
+  // joint revolves the section about *the axis the path turns about* -- a
+  // circular section cannot show the difference, anything else bunches at the
+  // corner. And it is a term of its own rather than something the segment
+  // answers past its end, gated on reach and clamped into the turn.
+  //
+  // The item is laid out in the order this reads it, which is not the order it
+  // was worked out in: the five values the cull test needs come first, so a
+  // segment that cannot win is answered without reading the other nineteen.
+  // build-twins.mjs's intrinsic table and sweep.js's `pack` say that same
+  // layout, and check-glsl runs both ends of it on the same data.
+  sweep: { fn: 'pSweep', slotted: true, spec: true,
+    src: `float sweepSection(float kind, vec3 sp, float u, float v){
+  if (kind < 0.5) return length(vec2(u, v)) - sp.x;
+  if (kind < 1.5) {
+    float hw = max(sp.x*0.5 - sp.z, 0.0), hh = max(sp.y*0.5 - sp.z, 0.0);
+    float qu = abs(u) - hw, qv = abs(v) - hh;
+    return length(max(vec2(qu, qv), 0.0)) + min(max(qu, qv), 0.0) - sp.z;
+  }
+  if (kind < 2.5) return max(length(vec2(u, v)) - sp.x, -v);
+  // A drawn 2D sketch, by profile slot: the same outlines the profile
+  // primitive extrudes, and the same polygonSDF the kernel evaluates.
+  return sectionPoly(sp.x, u, v);
+}
+
+float pSweep(sweeppath w, vec3 p, vec3 d, float r){
+  float best = 1e18;
+  int n = swCount(w);
+  for (int i = 0; i < n; i++) {
+    // Only what the cull test needs is read here. A segment that cannot win
+    // costs one dot, one length and a compare, and never touches the other
+    // nineteen numbers of its item -- which is most of the item, and on the JS
+    // side most of the memory traffic.
+    vec3 A = swA(w, i);
+    vec3 T = swT(w, i);
+    vec3 LS = swLS(w, i);
+    vec3 M = swMisc(w, i);
+    float cull = swCull(w, i);
+
+    vec3 pa = p - A;
+    float proj = dot(pa, T);
+    float q = clamp(proj, 0.0, LS.x);
+    // Everything this segment can contribute -- the prism, its caps, a miter's
+    // run-on and the fill at its joint -- lies within cull of the axis, so a
+    // point further than that from the axis cannot beat what is already in
+    // best. The taper divides the answer down, so it has to be allowed for
+    // here, exactly as the joint's own reach test allows for it.
+    //
+    // This is what makes a sweep affordable. The union is over every segment
+    // by definition -- that is what stops a self-crossing path from taking
+    // bites out of itself -- but a point near one end of the path is nowhere
+    // near the far end, and answering for the far end costs a hundred flops to
+    // return a number that loses. The test drops only terms that provably
+    // lose, so a culled sweep is bit-for-bit the sweep it would have been.
+    if (length(pa - T*q) - cull < best*M.y) {
+      vec3 U = swU(w, i);
+      vec3 V = swV(w, i);
+      vec2 K = swK(w, i);
+      vec2 TC = swTurn(w, i);
+      vec2 E = swE(w, i);
+      vec3 C = swCaps(w, i);
+      float kind = swKind(w, i);
+      vec3 sp = swSect(w, i);
+
+      float t = q/LS.x;
+      float oStart = -(proj + E.x);
+      float oEnd = proj - (LS.x + E.y);
+      bool atA = oStart > oEnd;
+      float past = atA ? oStart : oEnd;
+      float capped = max(C.x > 0.5 ? oStart : -1e30, C.y > 0.5 ? oEnd : -1e30);
+      float s = LS.y + (LS.z - LS.y)*t;
+      float u0 = dot(pa, U);
+      float v0 = dot(pa, V);
+      float u = u0;
+      float v = v0;
+      if (M.x != 0.0) {
+        float a = M.x*t;
+        float ca = cos(a);
+        float sa = sin(a);
+        u = u0*ca + v0*sa;
+        v = v0*ca - u0*sa;
+      }
+      float d2 = s > 1e-9 ? sweepSection(kind, sp, u/s, v/s)*s : length(vec2(u, v));
+      float raw;
+      if (past > 0.0) raw = d2 <= 0.0 ? past : length(vec2(d2, past));
+      else raw = max(d2, capped);
+      best = min(best, raw/M.y);
+
+      if (C.z > 0.5) {
+        float oJ = proj - LS.x;
+        if (length(vec3(u0, v0, oJ)) - M.z < best*M.y) {
+          float uj = u0;
+          float vj = v0;
+          if (M.x != 0.0) {
+            float ca = cos(M.x);
+            float sa = sin(M.x);
+            uj = u0*ca + v0*sa;
+            vj = v0*ca - u0*sa;
+          }
+          float sJ = LS.z;
+          float pk = uj*K.x + vj*K.y;
+          float pm = vj*K.x - uj*K.y;
+          float beta;
+          float off;
+          if (oJ < 0.0) { beta = pm; off = oJ; }
+          else if (pm*TC.y - oJ*TC.x >= 0.0) { beta = length(vec2(pm, oJ)); off = 0.0; }
+          else { beta = pm*TC.x + oJ*TC.y; off = oJ*TC.x - pm*TC.y; }
+          float p2 = sweepSection(kind, sp, (pk*K.x - beta*K.y)/sJ,
+                                            (pk*K.y + beta*K.x)/sJ)*sJ;
+          float c = (off == 0.0 ? p2 : length(vec2(max(p2, 0.0), abs(off))))/M.y;
+          best = min(best, c);
+        }
+      }
+    }
+  }
+  return best;
+}` },
+
+  // A profile is the other one whose data cannot travel in the uniform block,
+  // and it does not need to: an outline is a few hundred vec2s, and the
+  // distance to a polygon is a loop over its edges.
+  //
+  // This is the definition -- rolled, with the outline reached through the
+  // `edgeCount`/`edgeA`/`edgeB` INTRINSICS, which is how the JS twin is
+  // derived from it. What the GPU actually runs is the unrolled form
+  // specialises this same loop by unrolling the edges into straight-line code.
+  // That is an optimisation forced by WebGL2 (see the note there), not a
+  // second definition, and check-glsl holds the unrolled form against the JS
+  // this one generates.
+  profile: { fn: 'pProfile', slotted: true, spec: true,
+    src: `float pProfile(outline o, vec3 p, vec3 d, float r){
+  float dd = 1e18;
+  bool ins = false;
+  int n = edgeCount(o);
+  for (int i = 0; i < n; i++) {
+    vec2 A = edgeA(o, i);
+    vec2 B = edgeB(o, i);
+    vec2 e = B - A;
+    vec2 w = p.xy - A;
+    vec2 q = w - e*clamp(dot(w, e)/dot(e, e), 0.0, 1.0);
+    dd = min(dd, dot(q, q));
+    bool c1 = p.y >= A.y;
+    bool c2 = p.y < B.y;
+    float cr = e.x*w.y - e.y*w.x;
+    if ((c1 && c2 && cr > 0.0) || (!c1 && !c2 && cr < 0.0)) ins = !ins;
+  }
+  float da = (ins ? -1.0 : 1.0)*sqrt(dd);
+  float db = abs(p.z) - d.z;
+  return min(max(da, db), 0.0) + length(max(vec2(da, db), 0.0));
+}` },
+
+  // A construct: masses hung on a skeleton of connectors, folded with smin.
+  //
+  // The skeleton is not here. construct.js walks the tree once and hands over
+  // a flat list in which every item already carries its own resolved frame --
+  // the same division sweep.js makes, and for the same reason: composing
+  // parents is a global property of the rig and this is a local evaluation. So
+  // there is no hierarchy in this loop, no recursion, and nothing indexed
+  // dynamically. A pose is different numbers in the same list.
+  //
+  // The frame arrives as a unit quaternion, already inverted, because what a
+  // mass wants is its own local point: local = R'(p - o). Inverting a unit
+  // quaternion is a sign flip on three floats, so construct.js does it once
+  // per pack instead of once per sample per item, and the shader applies it
+  // with the standard two-cross-product form. Four floats rather than a 3x3's
+  // nine is worth it here: an item is read out of a uniform block whose size
+  // is the consumer's whole budget, and a timeline will want to slerp them.
+  //
+  // Every transform is rigid. That is not a convention, it is what keeps this
+  // a distance function -- construct.js refuses a scaled connector rather than
+  // let the marcher step by a number that is too big.
+  //
+  // The cull is sweep's, for the same payoff: a bounding sphere first, so a
+  // connector that cannot beat what has already been found is answered in four
+  // reads instead of seventeen. smin(best, dd, k) is best whenever
+  // dd >= best + k, and the k is already inside the radius construct.js packed,
+  // so skipping is exact -- it changes the cost and never the answer.
+  //
+  // Exact *provided* a mass never reports less than the distance to its own
+  // bounding sphere, and one of them does. An ellipsoid's is iq's bound rather
+  // than its distance, and an anisotropic bound falls behind the true distance
+  // without limit as you go out: no sphere is large enough to make the
+  // implication hold, so this was not a radius to enlarge. What fixes it is
+  // that the ball distance is *itself* a valid under-estimate -- the mass is
+  // inside the ball -- so the greater of the two is one as well, and taking it
+  // makes the premise true by construction. It costs a `max` and it tightens
+  // the ellipsoid's far field on the way past, which the marcher is glad of.
+  construct: { fn: 'pConstruct', slotted: true, spec: true,
+    src: `float constructMass(float kind, vec3 q, vec3 dm, float tip){
+  if (kind < 0.5) {
+    float r0 = dm.x;
+    float h = dm.z;
+    // The cross-section's second axis, as a ratio of the first. A limb is not
+    // a circle in section -- a wrist is 55 mm across and 40 through -- and a
+    // figure built from round bones reads as tubing however good its
+    // proportions are. Dividing the point by the ratio and multiplying the
+    // answer by the smaller scale is the standard way to make an anisotropic
+    // shape out of an isotropic one and stay 1-Lipschitz: the gradient picks
+    // up 1/min(scale) and the factor takes it straight back out.
+    float asp = max(dm.y, 1e-4);
+    vec3 e = vec3(q.x, q.y/asp, q.z);
+    float m = min(asp, 1.0);
+    float sl = (r0 - tip)/h;
+    float a2 = 1.0 - sl*sl;
+    // One ball swallowing the other leaves no tangent cone between them and
+    // the hull is just the larger ball -- the same degenerate case a wire's
+    // round cone guards, reachable here by tapering a short bone hard.
+    if (a2 <= 0.0) return min(length(e) - r0, length(e - vec3(0.0, 0.0, h)) - tip)*m;
+    float a = sqrt(a2);
+    vec2 w = vec2(length(e.xy), e.z);
+    float t = dot(w, vec2(-sl, a));
+    if (t < 0.0) return (length(w) - r0)*m;
+    if (t > a*h) return (length(w - vec2(0.0, h)) - tip)*m;
+    return (dot(w, vec2(a, sl)) - r0)*m;
+  }
+  if (kind < 1.5) {
+    vec3 rr = max(dm, vec3(1e-3));
+    float k0 = length(q/rr);
+    float k1 = length(q/(rr*rr));
+    if (k1 < 1e-6) return -min(rr.x, min(rr.y, rr.z));
+    return k0*(k0 - 1.0)/k1;
+  }
+  if (kind < 2.5) return length(q) - dm.x;
+  vec3 e = max(dm - tip, vec3(0.0));
+  vec3 g = abs(q) - e;
+  return length(max(g, 0.0)) + min(max(g.x, max(g.y, g.z)), 0.0) - tip;
+}
+
+float pConstruct(rig c, vec3 p, vec3 d, float r){
+  float best = 1e18;
+  int n = conCount(c);
+  for (int i = 0; i < n; i++) {
+    vec3 bc = conCull(c, i);
+    float br = conCullR(c, i);
+    float bd = length(p - bc) - br;
+    if (bd < best) {
+      vec3 org = conOrg(c, i);
+      vec3 qv = conQ(c, i);
+      float qw = conQW(c, i);
+      vec3 dm = conMass(c, i);
+      vec3 ms = conMisc(c, i);
+      vec3 pa = p - org;
+      vec3 t = vec3(qv.y*pa.z - qv.z*pa.y, qv.z*pa.x - qv.x*pa.z, qv.x*pa.y - qv.y*pa.x);
+      vec3 lp = pa + (t*qw + vec3(qv.y*t.z - qv.z*t.y, qv.z*t.x - qv.x*t.z,
+                                  qv.x*t.y - qv.y*t.x))*2.0;
+      best = smin(best, max(constructMass(ms.x, lp, dm, ms.y), bd + ms.z), ms.z);
+    }
+  }
+  return best;
 }` }
 };
 
 // The whole primitive function library, ready to paste into a fragment
 // shader. Pass a key list to emit a subset.
+// The fold's own functions, which are not primitives but are just as much a
+// definition: `smin` is what a blend *is*, and `invRot` is what a rotation is.
+//
+// These used to be hand-written in three places -- once in JavaScript in the
+// kernel, and once in GLSL in each of the two files that assemble a shader,
+// character for character identical. That is the same duplication the twins no
+// longer have, so it is written here once and everyone reads it from here.
+//
+// `smin` and `smax` are translated into the kernel's generated block like any
+// primitive. `invRot` is not, and deliberately: its JS twin writes into a
+// caller-supplied array rather than returning one, because `sceneSDF` calls it
+// once per node per sample and a returned array would be a hundred million
+// allocations in a single mesh. It stays hand-written on the JS side, and
+// check-glmesh compares the two ends of it per sample on a rotated scene.
+const FOLD = `float smin(float a, float b, float k){
+  if (k <= 0.0) return min(a, b);
+  float h = clamp(0.5 + 0.5*(b - a)/k, 0.0, 1.0);
+  return mix(b, a, h) - k*h*(1.0 - h);
+}
+
+float smax(float a, float b, float k){ return -smin(-a, -b, k); }
+
+vec3 invRot(vec3 p, vec3 e){
+  float c, s; vec3 q = p;
+  c = cos(e.z); s = sin(e.z); q = vec3( c*q.x + s*q.y, -s*q.x + c*q.y, q.z);
+  c = cos(e.y); s = sin(e.y); q = vec3( c*q.x - s*q.z, q.y, s*q.x + c*q.z);
+  c = cos(e.x); s = sin(e.x); q = vec3( q.x, c*q.y + s*q.z, -s*q.y + c*q.z);
+  return q;
+}
+`;
+// Which of them the kernel generates a twin for; the rest are shader-only.
+const FOLD_TWINS = ['smin', 'smax'];
+
+function foldSource() { return FOLD; }
+
+// The bridge from a sweep's polygon section to the profile slot that holds it.
+// GLSL has no function pointers and cannot build a name from a float, so this
+// is a dispatch over however many slots the plan named -- three or four lines,
+// and the compiler folds it away because the slot arrives as a literal.
+//
+// A profile extruded with a half-thickness of 1e9 is exactly its own 2D
+// distance: the slab term never wins, so min(max(da, db), 0) + length(...)
+// collapses to da. That is why a section needs no separate evaluator.
+function sectionPolyDecl(count) {
+  const n = Math.max(count | 0, 1);
+  let s = 'float sectionPoly(float slot, float u, float v){\n';
+  for (let i = 0; i < n - 1; i++)
+    s += `  if (slot < ${i}.5) return pProfile${i}(vec3(u, v, 0.0), vec3(0.0, 0.0, 1e9));\n`;
+  s += `  return pProfile${n - 1}(vec3(u, v, 0.0), vec3(0.0, 0.0, 1e9));\n}\n`;
+  return s;
+}
+
+// Every slotted primitive's declarations, in the one order that compiles:
+// profiles first, then the section dispatcher, then everything else -- because
+// a sweep with a drawn section calls into the profiles and GLSL wants a
+// function declared before it is used. `slots` is
+// { profile: [items], wire: [...], sweep: [...] } from SinterForm.slotList.
+//
+// Both consumers get their block from here. The viewer packs its uniforms
+// differently and writes its own map(), but the unrolling is the kernel's --
+// written once per primitive, and called.
+function slotBlock(plan, slots) {
+  slots = slots || {};
+  const nProfile = Math.max(maxSlot(plan, 'profile'),
+                            (slots.profile || []).length, 1);
+  return slotDecls('profile', slots.profile || [], nProfile) + '\n'
+    + sectionPolyDecl(nProfile) + '\n'
+    + Object.keys(UNROLL).filter(k => k !== 'profile')
+        .map(k => slotDecls(k, slots[k] || [], maxSlot(plan, k))).join('\n');
+}
+
+// A `spec` source is the primitive's *definition* -- what build-twins.mjs
+// translates -- and not code any shader runs: `profile`'s names an `outline`
+// type that GLSL does not have, because what the GPU runs is the unrolled
+// specialisation `slotDecls` writes. Emitting it would not compile.
 function library(keys) {
-  return (keys || Object.keys(GLSL)).map(k => GLSL[k].src).join('\n');
+  return (keys || Object.keys(GLSL))
+    .filter(k => !GLSL[k].spec)
+    .map(k => GLSL[k].src).join('\n');
 }
 
 // The call for one shape. `dims` and `round` are GLSL expressions the caller
@@ -1252,6 +2586,9 @@ function library(keys) {
 function call(key, point, dims, round, field) {
   const g = GLSL[key];
   if (!g) throw new Error('no GLSL for primitive: ' + key);
+  // A slotted primitive's data is compiled into a function of its own, so the
+  // slot is part of the name and there is no round to pass.
+  if (g.slotted) return `${g.fn}${field | 0}(${point}, ${dims})`;
   return g.sampler
     ? `${g.fn}(uField${field | 0}, ${point}, ${dims}, ${round})`
     : `${g.fn}(${point}, ${dims}, ${round})`;
@@ -1260,16 +2597,529 @@ function call(key, point, dims, round, field) {
 // The sampler declarations the library needs. `count` is the caller's texture
 // budget: this file has no opinion about how many are affordable.
 // GLSL ES 3.0 has no default precision for sampler3D, so it is stated here.
+// One function per profile, with its outline compiled straight into it.
+//
+// This is iq's polygon distance, the same loop sinterform.js runs in JS, then
+// the usual slab combine for the extrusion -- so the two halves are the same
+// arithmetic on the same numbers, and check-glsl.mjs holds them to it. Loops
+// after the first are holes: the crossing count runs over all of them at once,
+// so a point inside an odd number is outside the material.
+//
+// The edges are emitted one after another rather than indexed out of a const
+// array in a loop. Dynamic indexing of a constant array is where a GLSL
+// compiler is entitled to give up and expand every read into a chain of
+// selects, one per entry, which turns an O(edges) function into O(edges^2) --
+// on a software rasteriser that was the difference between a frame and forty
+// seconds. Straight-line code also lets the compiler fold each edge's vector
+// arithmetic at compile time, since both its ends are literals.
+// `count` is how many slots the shader must be able to name, which is a
+// property of the *plan* rather than of the library: a node may refer to slot 3
+// with nothing in it yet, and an undeclared pProfile3 is a compile error rather
+// than an empty shape. Defaults to one more than the library holds.
+// <<< generated unrollers
+// ---------------------------------------------------------------------------
+// GENERATED by build-twins.mjs from the rolled sources above — do not edit.
+//
+// A slotted primitive's shape is a list of items on the document, and WebGL2
+// cannot index a constant array without expanding every read into a chain of
+// selects. So the loop is unrolled: the body once as a macro, one invocation
+// per item. This table is that body, taken from the same rolled source the JS
+// twin is taken from, so the straight-line GLSL and the JavaScript cannot
+// describe different shapes.
+//
+// `items` is a flat array of numbers per slot, `stride` of them per item, laid
+// out in the order the parameters are listed. `SinterForm.slotItems(key, obj)`
+// packs exactly that, and supplies a default when a slot is empty — which is
+// why no default shape is written down in this file.
+// ---------------------------------------------------------------------------
+const UNROLL = {
+  wire: {
+    fn: "pWire", stride: 8, arity: [3, 3, 2],
+    helpers: "",
+    pre: "  float best = 1e18;",
+    macro: "#define ITEM(SEGA, SEGB, SEGR) {\\\n  vec3 A = SEGA; \\\n  vec3 B = SEGB; \\\n  vec2 rr = SEGR; \\\n  vec3 ba = (B - A); \\\n  vec3 pa = (p - A); \\\n  float l2 = dot(ba, ba); \\\n  float dr = (rr.x - rr.y); \\\n  float a2 = (l2 - (dr * dr)); \\\n  if ((a2 <= 0.0)) { \\\n    best = min(best, min((length(pa) - rr.x), (length((p - B)) - rr.y))); \\\n  } else { \\\n    float il2 = (1.0 / l2); \\\n    float y = dot(pa, ba); \\\n    float z = (y - l2); \\\n    vec3 cx = ((pa * l2) - (ba * y)); \\\n    float x2 = dot(cx, cx); \\\n    float y2 = ((y * y) * l2); \\\n    float z2 = ((z * z) * l2); \\\n    float k = (((sign(dr) * dr) * dr) * x2); \\\n    float dd = 0.0; \\\n    if ((((sign(z) * a2) * z2) > k)) { \\\n      dd = ((sqrt((x2 + z2)) * il2) - rr.y); \\\n    } else { \\\n      if ((((sign(y) * a2) * y2) < k)) { \\\n        dd = ((sqrt((x2 + y2)) * il2) - rr.x); \\\n      } else { \\\n        dd = (((sqrt(((x2 * a2) * il2)) + (y * dr)) * il2) - rr.x); \\\n      } \\\n    } \\\n    best = min(best, dd); \\\n  } }\n",
+    post: "  return best;"
+  },
+  sweep: {
+    fn: "pSweep", stride: 32, arity: [3, 3, 3, 3, 1, 3, 3, 2, 2, 2, 3, 1, 3],
+    helpers: "float sweepSection(float kind, vec3 sp, float u, float v){\n  if ((kind < 0.5)) {\n    return (length(vec2(u, v)) - sp.x);\n  }\n  if ((kind < 1.5)) {\n    float hw = max(((sp.x * 0.5) - sp.z), 0.0);\n    float hh = max(((sp.y * 0.5) - sp.z), 0.0);\n    float qu = (abs(u) - hw);\n    float qv = (abs(v) - hh);\n    return ((length(max(vec2(qu, qv), 0.0)) + min(max(qu, qv), 0.0)) - sp.z);\n  }\n  if ((kind < 2.5)) {\n    return max((length(vec2(u, v)) - sp.x), (-v));\n  }\n  return sectionPoly(sp.x, u, v);\n}\n",
+    pre: "  float best = 1e18;",
+    macro: "#define ITEM(SWA, SWT, SWLS, SWMISC, SWCULL, SWU, SWV, SWK, SWTURN, SWE, SWCAPS, SWKIND, SWSECT) {\\\n  vec3 A = SWA; \\\n  vec3 T = SWT; \\\n  vec3 LS = SWLS; \\\n  vec3 M = SWMISC; \\\n  float cull = SWCULL; \\\n  vec3 pa = (p - A); \\\n  float proj = dot(pa, T); \\\n  float q = clamp(proj, 0.0, LS.x); \\\n  if (((length((pa - (T * q))) - cull) < (best * M.y))) { \\\n    vec3 U = SWU; \\\n    vec3 V = SWV; \\\n    vec2 K = SWK; \\\n    vec2 TC = SWTURN; \\\n    vec2 E = SWE; \\\n    vec3 C = SWCAPS; \\\n    float kind = SWKIND; \\\n    vec3 sp = SWSECT; \\\n    float t = (q / LS.x); \\\n    float oStart = (-(proj + E.x)); \\\n    float oEnd = (proj - (LS.x + E.y)); \\\n    bool atA = (oStart > oEnd); \\\n    float past = (atA ? oStart : oEnd); \\\n    float capped = max(((C.x > 0.5) ? oStart : (-1e30)), ((C.y > 0.5) ? oEnd : (-1e30))); \\\n    float s = (LS.y + ((LS.z - LS.y) * t)); \\\n    float u0 = dot(pa, U); \\\n    float v0 = dot(pa, V); \\\n    float u = u0; \\\n    float v = v0; \\\n    if ((M.x != 0.0)) { \\\n      float a = (M.x * t); \\\n      float ca = cos(a); \\\n      float sa = sin(a); \\\n      u = ((u0 * ca) + (v0 * sa)); \\\n      v = ((v0 * ca) - (u0 * sa)); \\\n    } \\\n    float d2 = ((s > 1e-9) ? (sweepSection(kind, sp, (u / s), (v / s)) * s) : length(vec2(u, v))); \\\n    float raw; \\\n    if ((past > 0.0)) { \\\n      raw = ((d2 <= 0.0) ? past : length(vec2(d2, past))); \\\n    } else { \\\n      raw = max(d2, capped); \\\n    } \\\n    best = min(best, (raw / M.y)); \\\n    if ((C.z > 0.5)) { \\\n      float oJ = (proj - LS.x); \\\n      if (((length(vec3(u0, v0, oJ)) - M.z) < (best * M.y))) { \\\n        float uj = u0; \\\n        float vj = v0; \\\n        if ((M.x != 0.0)) { \\\n          float ca = cos(M.x); \\\n          float sa = sin(M.x); \\\n          uj = ((u0 * ca) + (v0 * sa)); \\\n          vj = ((v0 * ca) - (u0 * sa)); \\\n        } \\\n        float sJ = LS.z; \\\n        float pk = ((uj * K.x) + (vj * K.y)); \\\n        float pm = ((vj * K.x) - (uj * K.y)); \\\n        float beta; \\\n        float off; \\\n        if ((oJ < 0.0)) { \\\n          beta = pm; \\\n          off = oJ; \\\n        } else { \\\n          if ((((pm * TC.y) - (oJ * TC.x)) >= 0.0)) { \\\n            beta = length(vec2(pm, oJ)); \\\n            off = 0.0; \\\n          } else { \\\n            beta = ((pm * TC.x) + (oJ * TC.y)); \\\n            off = ((oJ * TC.x) - (pm * TC.y)); \\\n          } \\\n        } \\\n        float p2 = (sweepSection(kind, sp, (((pk * K.x) - (beta * K.y)) / sJ), (((pk * K.y) + (beta * K.x)) / sJ)) * sJ); \\\n        float c = (((off == 0.0) ? p2 : length(vec2(max(p2, 0.0), abs(off)))) / M.y); \\\n        best = min(best, c); \\\n      } \\\n    } \\\n  } }\n",
+    post: "  return best;"
+  },
+  profile: {
+    fn: "pProfile", stride: 4, arity: [2, 2],
+    helpers: "",
+    pre: "  float dd = 1e18;\n  bool ins = false;",
+    macro: "#define ITEM(EDGEA, EDGEB) {\\\n  vec2 A = EDGEA; \\\n  vec2 B = EDGEB; \\\n  vec2 e = (B - A); \\\n  vec2 w = (p.xy - A); \\\n  vec2 q = (w - (e * clamp((dot(w, e) / dot(e, e)), 0.0, 1.0))); \\\n  dd = min(dd, dot(q, q)); \\\n  bool c1 = (p.y >= A.y); \\\n  bool c2 = (p.y < B.y); \\\n  float cr = ((e.x * w.y) - (e.y * w.x)); \\\n  if ((((c1 && c2) && (cr > 0.0)) || (((!c1) && (!c2)) && (cr < 0.0)))) { \\\n    ins = (!ins); \\\n  } }\n",
+    post: "  float da = ((ins ? (-1.0) : 1.0) * sqrt(dd));\n  float db = (abs(p.z) - d.z);\n  return (min(max(da, db), 0.0) + length(max(vec2(da, db), 0.0)));"
+  },
+  construct: {
+    fn: "pConstruct", stride: 17, arity: [3, 1, 3, 3, 1, 3, 3],
+    helpers: "float constructMass(float kind, vec3 q, vec3 dm, float tip){\n  if ((kind < 0.5)) {\n    float r0 = dm.x;\n    float h = dm.z;\n    float asp = max(dm.y, 1e-4);\n    vec3 e = vec3(q.x, (q.y / asp), q.z);\n    float m = min(asp, 1.0);\n    float sl = ((r0 - tip) / h);\n    float a2 = (1.0 - (sl * sl));\n    if ((a2 <= 0.0)) {\n      return (min((length(e) - r0), (length((e - vec3(0.0, 0.0, h))) - tip)) * m);\n    }\n    float a = sqrt(a2);\n    vec2 w = vec2(length(e.xy), e.z);\n    float t = dot(w, vec2((-sl), a));\n    if ((t < 0.0)) {\n      return ((length(w) - r0) * m);\n    }\n    if ((t > (a * h))) {\n      return ((length((w - vec2(0.0, h))) - tip) * m);\n    }\n    return ((dot(w, vec2(a, sl)) - r0) * m);\n  }\n  if ((kind < 1.5)) {\n    vec3 rr = max(dm, vec3(1e-3));\n    float k0 = length((q / rr));\n    float k1 = length((q / (rr * rr)));\n    if ((k1 < 1e-6)) {\n      return (-min(rr.x, min(rr.y, rr.z)));\n    }\n    return ((k0 * (k0 - 1.0)) / k1);\n  }\n  if ((kind < 2.5)) {\n    return (length(q) - dm.x);\n  }\n  vec3 e = max((dm - tip), vec3(0.0));\n  vec3 g = (abs(q) - e);\n  return ((length(max(g, 0.0)) + min(max(g.x, max(g.y, g.z)), 0.0)) - tip);\n}\n",
+    pre: "  float best = 1e18;",
+    macro: "#define ITEM(CONCULL, CONCULLR, CONORG, CONQ, CONQW, CONMASS, CONMISC) {\\\n  vec3 bc = CONCULL; \\\n  float br = CONCULLR; \\\n  float bd = (length((p - bc)) - br); \\\n  if ((bd < best)) { \\\n    vec3 org = CONORG; \\\n    vec3 qv = CONQ; \\\n    float qw = CONQW; \\\n    vec3 dm = CONMASS; \\\n    vec3 ms = CONMISC; \\\n    vec3 pa = (p - org); \\\n    vec3 t = vec3(((qv.y * pa.z) - (qv.z * pa.y)), ((qv.z * pa.x) - (qv.x * pa.z)), ((qv.x * pa.y) - (qv.y * pa.x))); \\\n    vec3 lp = (pa + (((t * qw) + vec3(((qv.y * t.z) - (qv.z * t.y)), ((qv.z * t.x) - (qv.x * t.z)), ((qv.x * t.y) - (qv.y * t.x)))) * 2.0)); \\\n    best = smin(best, max(constructMass(ms.x, lp, dm, ms.y), (bd + ms.z)), ms.z); \\\n  } }\n",
+    post: "  return best;"
+  }
+};
+
+// One slot's function. `items` is what SinterForm.slotItems returned for it.
+//
+// `uniform` is what makes a *pose* different from a *shape*. Without it the
+// item data is compiled straight into the function as literals, which is what
+// a wire or a sweep wants: the numbers are the geometry, and a compiler that
+// can see them folds the item's arithmetic away before it ever runs. A
+// construct's numbers change every frame an animation runs, and recompiling a
+// shader per frame is not a thing anyone can afford -- so the literals become
+// reads out of a uniform array instead. The *indices* stay literal, which is
+// the part that matters: WebGL2 still never indexes an array dynamically, so
+// the unrolling buys what it was written to buy, and only the values move.
+function slotDecl(key, i, items, uniform) {
+  const U = UNROLL[key];
+  if (!U) throw new Error('not a slotted primitive: ' + key);
+  const f = (v) => (Number.isFinite(v) ? v : 0).toPrecision(8);
+  const nm = uniform && uniform.name;
+  const rd = (j) => nm + '[' + (j >> 2) + '].' + 'xyzw'[j & 3];
+  // components landing inside one vec4 are a swizzle rather than a
+  // constructor: the same reads, a third of the source
+  const grp = (j, w) => {
+    if (w === 1) return rd(j);
+    if ((j & 3) + w <= 4)
+      return nm + '[' + (j >> 2) + '].' + 'xyzw'.slice(j & 3, (j & 3) + w);
+    const c = [];
+    for (let m = 0; m < w; m++) c.push(rd(j + m));
+    return 'vec' + w + '(' + c.join(',') + ')';
+  };
+  let body = '';
+  for (let o = 0; o + U.stride <= items.length; o += U.stride) {
+    const args = [];
+    let k = o;
+    for (const w of U.arity) {
+      if (uniform) { args.push(grp(uniform.base + k, w)); k += w; continue; }
+      const c = [];
+      for (let j = 0; j < w; j++) c.push(f(items[k++]));
+      args.push(w === 1 ? c[0] : `vec${w}(${c.join(',')})`);
+    }
+    body += `  ITEM(${args.join(',')});
+`;
+  }
+  // The helpers the body calls travel with the first slot: a spec source is
+  // not emitted by library(), so nothing else declares them.
+  return (i === 0 ? U.helpers : '')
+    + `float ${U.fn}${i}(vec3 p, vec3 d){
+${U.pre}
+${U.macro}${body}#undef ITEM
+${U.post}
+}
+`;
+}
+
+// Every slot the shader must be able to name. A node may refer to a slot the
+// document has not filled in yet, and an undeclared function is a compile
+// error rather than an empty shape -- so the caller passes one `items` array
+// per slot, and SinterForm.slotItems turns an absent entry into the default.
+//
+// `uniform`, when given, is the name of the vec4 array the items are read out
+// of, and the declaration comes back with them. Feed it with slotUniformData.
+function slotDecls(key, itemsPerSlot, count, uniform) {
+  const F = slotFill(itemsPerSlot, count);
+  const u = typeof uniform === 'string' ? { name: uniform } : uniform;
+  let s = u ? 'uniform vec4 ' + u.name + '[' + F.vec4s + '];\n' : '';
+  for (let i = 0; i < F.list.length; i++)
+    s += slotDecl(key, i, F.list[i], u ? { name: u.name, base: F.bases[i] } : null);
+  return s;
+}
+
+// One slot list, padded out to the slot count a shader has to be able to name,
+// and where each slot's items begin in the flat uniform array. Both the
+// source's reads and the consumer's upload come through here, so the two
+// cannot disagree about which float is which -- the same reason the shape
+// layout lives in this file rather than in whoever packs it.
+function slotFill(itemsPerSlot, count) {
+  const n = Math.max(count | 0, (itemsPerSlot || []).length, 1);
+  const list = [];
+  for (let i = 0; i < n; i++) list.push((itemsPerSlot || [])[i] || []);
+  const bases = [];
+  let f = 0;
+  for (const it of list) { bases.push(f); f += it.length; }
+  return { list, bases, floats: f, vec4s: Math.max(Math.ceil(f / 4), 1) };
+}
+
+// The numbers those reads expect, in that layout, padded to whole vec4s. A
+// consumer uploads this and nothing else.
+function slotUniformData(itemsPerSlot, count) {
+  const F = slotFill(itemsPerSlot, count);
+  const out = new Float32Array(F.vec4s * 4);
+  let n = 0;
+  for (const it of F.list) for (let j = 0; j < it.length; j++) out[n++] = it[j];
+  return out;
+}
+// >>> generated unrollers
+
 function samplerDecls(count) {
   let s = 'precision highp sampler3D;\n';
   for (let i = 0; i < (count | 0); i++) s += `uniform sampler3D uField${i};\n`;
   return s;
 }
 
-const SinterFormGLSL = { GLSL, library, call, samplerDecls,
+// ----------------------------------------------------------------------
+// A whole plan, as shader source and as the uniforms that feed it.
+//
+// This used to live in viewer.js, on the reasoning that packing is a
+// consumer's business. It is -- but the *layout* is not: three vec4 per shape,
+// in this order, is a contract between the generated source and whoever fills
+// the array, and two consumers writing it separately is the same trap the
+// hand-written twins were. The viewer draws with it and glmesh.js meshes with
+// it, and they cannot disagree about which float is the blend radius.
+//
+// Budgets stay arguments, per this file's charter: `maxN` and `maxFields` are
+// facts about a caller's uniform block, not about geometry.
+//
+//   uD[3i + 0] = position.xyz, blend radius
+//   uD[3i + 1] = rotation.xyz (radians), round slot
+//   uD[3i + 2] = dims.xyz, unused
+//
+// `roundSlot` is required and is the kernel's `SinterForm.roundSlot`: it says
+// what goes in that fourth float, which is corner rounding for every primitive
+// but a baked field, where it is the field's range.
+function sceneBody(plan, opts) {
+  opts = opts || {};
+  const maxN = opts.maxN === undefined ? 32 : opts.maxN;
+  const maxFields = opts.maxFields === undefined ? 4 : opts.maxFields;
+  const uni = opts.uniform || 'uD';
+  let body = '', slot = 0;
+  const at = new Map();
+  for (const part of plan)
+    for (const n of part.nodes)
+      if (slot < maxN && !at.has(n)) at.set(n, slot++);
+  for (const part of plan) {
+    body += '  dB = 1e9;\n';
+    for (const n of part.nodes) {
+      const i = at.get(n);
+      if (i === undefined) continue;
+      const b = 3 * i;
+      body += '  q = P;\n';
+      if (n.mx) body += '  q.x = abs(q.x);\n';
+      if (n.my) body += '  q.y = abs(q.y);\n';
+      if (n.mz) body += '  q.z = abs(q.z);\n';
+      body += `  q = invRot(q - ${uni}[${b}].xyz, ${uni}[${b + 1}].xyz);\n`;
+      const fi = n.t === 'field'
+        ? Math.min(Math.max(n.fi || 0, 0), maxFields - 1)
+        : Math.max(n.fi || 0, 0);
+      body += `  di = ${call(n.t, 'q', `${uni}[${b + 2}].xyz`, `${uni}[${b + 1}].w`, fi)};\n`;
+      body += n.op === 'add' ? `  dB = smin(dB, di, ${uni}[${b}].w);\n`
+            : n.op === 'cut' ? `  dB = smax(dB, -di, ${uni}[${b}].w);\n`
+            :                  `  dB = smax(dB, di, ${uni}[${b}].w);\n`;
+    }
+    body += '  d = min(d, dB);\n';
+  }
+  return { body, at };
+}
+
+// The complete `float map(vec3 P)` for a plan: library, outlines, fold.
+function mapSource(plan, profiles, opts) {
+  const { body, at } = sceneBody(plan, opts);
+  // `slots` is { profile: [itemsPerSlot], wire: [...] } from
+  // SinterForm.slotItems -- the kernel packs the data, this file turns it into
+  // source, and neither has an opinion about the other's half.
+  const slots = (opts && opts.slots) || {};
+  const src = `${library()}\n`
+    + slotBlock(plan, slots) + '\n'
+    + `float map(vec3 P){\n  float d = 1e9, dB, di; vec3 q;\n${body}  return d;\n}\n`;
+  return { src, at };
+}
+
+// How many slots of a slotted primitive the shader must be able to name. A
+// node may refer to a slot the library has not filled in yet, and an
+// undeclared pProfileN or pWireN is a compile error rather than an empty shape.
+function maxSlot(plan, t) {
+  let n = 1;
+  for (const part of plan || [])
+    for (const q of part.nodes || [])
+      if (q.t === t) n = Math.max(n, (q.fi | 0) + 1);
+  return n;
+}
+
+function packPlan(at, opts) {
+  opts = opts || {};
+  const maxN = opts.maxN === undefined ? 32 : opts.maxN;
+  const roundSlot = opts.roundSlot;
+  if (typeof roundSlot !== 'function')
+    throw new Error('packPlan needs opts.roundSlot (SinterForm.roundSlot)');
+  const RAD = Math.PI / 180;
+  const uData = opts.into || new Float32Array(maxN * 12);
+  uData.fill(0);
+  for (const [n, i] of at) {
+    const b = 12 * i;
+    uData[b] = n.p[0]; uData[b + 1] = n.p[1]; uData[b + 2] = n.p[2];
+    uData[b + 3] = Math.max(n.k || 0, 0);
+    uData[b + 4] = (n.r[0] || 0) * RAD;
+    uData[b + 5] = (n.r[1] || 0) * RAD;
+    uData[b + 6] = (n.r[2] || 0) * RAD;
+    uData[b + 7] = roundSlot(n);
+    uData[b + 8] = n.d[0]; uData[b + 9] = n.d[1] || 0; uData[b + 10] = n.d[2] || 0;
+  }
+  return uData;
+}
+
+const SinterFormGLSL = { GLSL, FOLD, FOLD_TWINS, foldSource, sectionPolyDecl,
+                         library, call, samplerDecls, slotBlock, slotDecls, slotDecl,
+                         slotFill, slotUniformData,
+                         sceneBody, mapSource, maxSlot, packPlan,
                          KEYS: Object.keys(GLSL) };
 if (typeof module !== 'undefined' && module.exports) module.exports = SinterFormGLSL;
 root.SinterFormGLSL = SinterFormGLSL;
+})(typeof self !== 'undefined' ? self : globalThis);
+</script>
+
+<!-- Optional in the strongest sense: the kernel does not import it, does not
+     know it exists, and meshes perfectly well without it. It fills the
+     mesher's sample grid on the GPU rather than in JavaScript, which is the
+     difference between a meshed viewport that keeps up with an edit and one
+     that stops the page for a second. -->
+<script id="sinterform-glmesh">
+/* SinterForm GPU meshing - fill the sample grid on the GPU, mesh it here
+ * Copyright (c) 2026 DuckySonadar
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Meshing is two jobs with very different costs. Filling the grid is one SDF
+ * evaluation per corner -- hundreds of thousands for a small part, tens of
+ * millions for a real one, and essentially all of the time. Walking the cells
+ * to emit triangles is cheap by comparison, and it is `surfaceNets`, which
+ * stays where it is.
+ *
+ * So this file does the expensive half on the GPU. It builds the same
+ * `float map(vec3)` the viewer raymarches -- from glsl.js, through the same
+ * `mapSource` and `packPlan`, so there is no second opinion about what the
+ * scene is -- renders the grid into a float target a slab at a time, reads it
+ * back, and hands the samples to the kernel's mesher.
+ *
+ * What it does NOT do is emit triangles on the GPU. A fragment shader produces
+ * one value per pixel; a mesh is a variable-length list of connected
+ * triangles, which needs the compute shaders, atomics and prefix sums that
+ * WebGL2 does not have (that is WebGPU). Calling this "GPU meshing" is
+ * therefore half true, and it is the expensive half.
+ *
+ * It is optional in the strongest sense: the kernel does not import it, does
+ * not know it exists, and meshes perfectly well without it. `SinterForm.mesh`
+ * takes a sampler and defaults to evaluating `sceneSDF` in JavaScript; this
+ * file is one you can pass instead when there is a GL context to be had.
+ *
+ * Same rule as the kernel: nothing here may spell a literal closing script
+ * tag, because this gets inlined into HTML too.
+ */
+(function (root) {
+"use strict";
+
+// One R32F texel per sample would be the obvious layout and it does not fit:
+// a 300 x 300 x 400 grid is 36 M samples, and no texture is that wide. So the
+// grid is drawn a slab of rows at a time, capped by texels rather than by
+// rows, and read back per slab. 4 M texels is 64 MB of RGBA32F readback
+// buffer, which is a comfortable working set and about 25 slabs for the
+// biggest grid the kernel will accept.
+const TEXELS = 4 << 20;
+
+const VS = `#version 300 es
+const vec2 v[3] = vec2[3](vec2(-1.,-1.), vec2(3.,-1.), vec2(-1.,3.));
+void main(){ gl_Position = vec4(v[gl_VertexID], 0.0, 1.0); }`;
+
+function head(maxN, maxFields) {
+  return `#version 300 es
+precision highp float;
+out vec4 outc;
+uniform vec4 uD[${maxN * 3}];
+uniform vec3 uLo;
+uniform float uRes;
+uniform ivec3 uN;
+uniform int uRow0;
+uniform int uW;
+${SinterFormGLSL.samplerDecls(maxFields)}
+${SinterFormGLSL.foldSource()}`;
+}
+
+// The grid is stored the way surfaceNets reads it: vol[(i*ny + j)*nz + k],
+// x-major, z fastest. One row of the render target is one (i, j) pair and the
+// column is k, so a row-major readback drops straight into the volume with no
+// shuffling -- which matters, because the shuffle would be the second most
+// expensive thing here.
+const TAIL = `
+void main(){
+  int col = int(gl_FragCoord.x);
+  int row = uRow0 + int(gl_FragCoord.y);
+  int i = row / uN.y;
+  int j = row - i*uN.y;
+  if (col >= uN.z || i >= uN.x) { outc = vec4(1e9); return; }
+  vec3 P = uLo + vec3(float(i), float(j), float(col))*uRes;
+  outc = vec4(map(P), 0.0, 0.0, 1.0);
+}`;
+
+function compile(gl, src, kind) {
+  const s = gl.createShader(kind);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+    throw new Error('glmesh: ' + gl.getShaderInfoLog(s));
+  return s;
+}
+
+// A context of our own, off-screen, when the caller has not got one to lend.
+// OffscreenCanvas where it exists so this works in a worker; a detached
+// <canvas> otherwise.
+function makeContext() {
+  const opts = { antialias: false, depth: false, stencil: false,
+                 preserveDrawingBuffer: false };
+  let cv = null;
+  if (typeof OffscreenCanvas !== 'undefined') cv = new OffscreenCanvas(1, 1);
+  else if (typeof document !== 'undefined') cv = document.createElement('canvas');
+  if (!cv) return null;
+  return cv.getContext('webgl2', opts);
+}
+
+// Is there a GPU path to be had at all? Cheap enough to ask before every
+// mesh, and the answer is what decides between this and the JS fallback.
+function available(gl) {
+  try {
+    const g = gl || makeContext();
+    return !!(g && g.getExtension('EXT_color_buffer_float'));
+  } catch { return false; }
+}
+
+// The sampler `SinterForm.mesh` wants: fill `vol` with the scene's distance at
+// every grid corner. Signature and grid convention are the kernel's, so this
+// and the JS default are interchangeable.
+function sampler(opts) {
+  opts = opts || {};
+  const SF = opts.SinterForm || root.SinterForm;
+  const GL = opts.SinterFormGLSL || root.SinterFormGLSL;
+  if (!SF || !GL) throw new Error('glmesh needs SinterForm and SinterFormGLSL');
+  const maxN = opts.maxN === undefined ? 32 : opts.maxN;
+  const maxFields = opts.maxFields === undefined ? 4 : opts.maxFields;
+
+  let gl = opts.gl || null, owned = false;
+  const texes = new Map();
+
+  return function sample(plan, lo, n, res, vol) {
+    if (!gl) { gl = makeContext(); owned = true; }
+    if (!gl) throw new Error('glmesh: no WebGL2 context');
+    if (!gl.getExtension('EXT_color_buffer_float'))
+      throw new Error('glmesh: no float render target (EXT_color_buffer_float)');
+
+    // A borrowed context belongs to something that is drawing with it, so
+    // whatever this binds has to be put back. The viewer hands over its own
+    // context and would otherwise find its framebuffer and viewport moved.
+    const prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+    const prevVp = gl.getParameter(gl.VIEWPORT);
+    const prevProg = gl.getParameter(gl.CURRENT_PROGRAM);
+    const prevVao = gl.getParameter(gl.VERTEX_ARRAY_BINDING);
+
+    const { src, at } = GL.mapSource(plan, SF.profiles, { maxN, maxFields,
+      slots: { profile: SF.slotList('profile', SF.profiles, GL.maxSlot(plan, 'profile')),
+               wire: SF.slotList('wire', SF.wires, GL.maxSlot(plan, 'wire')),
+               sweep: SF.slotList('sweep', SF.sweeps, GL.maxSlot(plan, 'sweep')),
+               construct: SF.slotList('construct', SF.constructs,
+                                      GL.maxSlot(plan, 'construct')) } });
+    const prog = gl.createProgram();
+    gl.attachShader(prog, compile(gl, VS, gl.VERTEX_SHADER));
+    gl.attachShader(prog, compile(gl, head(maxN, maxFields) + src + TAIL,
+                                  gl.FRAGMENT_SHADER));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+      throw new Error('glmesh: ' + gl.getProgramInfoLog(prog));
+    gl.useProgram(prog);
+
+    const W = n[2];                       // one column per z sample
+    const rows = n[0] * n[1];
+    const maxRows = Math.max(1, Math.min(rows, Math.floor(TEXELS / Math.max(W, 1)),
+                                         gl.getParameter(gl.MAX_TEXTURE_SIZE)));
+    if (W > gl.getParameter(gl.MAX_TEXTURE_SIZE))
+      throw new Error(`glmesh: grid is ${W} deep, past this GPU's texture limit`);
+
+    const out = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, out);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, W, maxRows, 0,
+                  gl.RGBA, gl.FLOAT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
+                            gl.TEXTURE_2D, out, 0);
+
+    // the same uniform block the viewer packs, from the same function
+    const uData = GL.packPlan(at, { maxN, roundSlot: SF.roundSlot });
+    gl.uniform4fv(gl.getUniformLocation(prog, 'uD'), uData);
+    gl.uniform3f(gl.getUniformLocation(prog, 'uLo'), lo[0], lo[1], lo[2]);
+    gl.uniform1f(gl.getUniformLocation(prog, 'uRes'), res);
+    gl.uniform3i(gl.getUniformLocation(prog, 'uN'), n[0], n[1], n[2]);
+    gl.uniform1i(gl.getUniformLocation(prog, 'uW'), W);
+    bindFields(gl, SF, texes, maxFields, prog);
+
+    gl.bindVertexArray(gl.createVertexArray());
+    const px = new Float32Array(W * maxRows * 4);
+    const rowLoc = gl.getUniformLocation(prog, 'uRow0');
+    for (let r0 = 0; r0 < rows; r0 += maxRows) {
+      const h = Math.min(maxRows, rows - r0);
+      gl.uniform1i(rowLoc, r0);
+      gl.viewport(0, 0, W, h);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.readPixels(0, 0, W, h, gl.RGBA, gl.FLOAT, px);
+      // RGBA32F rather than R32F: reading RGBA/FLOAT off a float attachment is
+      // the combination WebGL2 always allows, and the extra bandwidth is a
+      // rounding error beside the evaluation it saves.
+      const base = r0 * W;
+      for (let t = 0, m = h * W; t < m; t++) vol[base + t] = px[4 * t];
+    }
+
+    gl.deleteFramebuffer(fbo);
+    gl.deleteTexture(out);
+    gl.deleteProgram(prog);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);
+    gl.viewport(prevVp[0], prevVp[1], prevVp[2], prevVp[3]);
+    gl.useProgram(prevProg);
+    gl.bindVertexArray(prevVao);
+    return vol;
+  };
+}
+
+// Baked fields still have to reach the shader. Same layout as viewer.js's
+// texOf -- nz wide by ny by nx, trilinear, edges clamped -- because
+// `fieldSample` in glsl.js assumes exactly that.
+function bindFields(gl, SF, texes, maxFields, prog) {
+  const fs = SF.fields || [];
+  for (let i = 0; i < maxFields; i++) {
+    const f = fs[i];
+    const loc = gl.getUniformLocation(prog, `uField${i}`);
+    if (loc === null) continue;
+    gl.activeTexture(gl.TEXTURE0 + i);
+    let t = f && texes.get(f);
+    if (f && !t) {
+      t = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_3D, t);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, f.nz, f.ny, f.nx, 0,
+                    gl.RED, gl.UNSIGNED_BYTE, f.data);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      for (const w of ['TEXTURE_WRAP_S', 'TEXTURE_WRAP_T', 'TEXTURE_WRAP_R'])
+        gl.texParameteri(gl.TEXTURE_3D, gl[w], gl.CLAMP_TO_EDGE);
+      texes.set(f, t);
+    }
+    gl.bindTexture(gl.TEXTURE_3D, t || null);
+    gl.uniform1i(loc, i);
+  }
+  gl.activeTexture(gl.TEXTURE0);
+}
+
+// The whole job, for a caller that just wants triangles.
+function mesh(plan, opts) {
+  opts = opts || {};
+  const SF = opts.SinterForm || root.SinterForm;
+  return SF.mesh(plan, Object.assign({}, opts, { sample: sampler(opts) }));
+}
+
+const SinterGLMesh = { available, sampler, mesh, TEXELS };
+if (typeof module !== 'undefined' && module.exports) module.exports = SinterGLMesh;
+root.SinterGLMesh = SinterGLMesh;
 })(typeof self !== 'undefined' ? self : globalThis);
 </script>
 
@@ -1292,12 +3142,26 @@ const SF = SinterForm;
 // shapes into an SSBO would have neither limit, which is why the kernel does
 // not carry these numbers.
 const GL = SinterFormGLSL;
-const MAXN = 32;
+// And the third module, which is optional: it fills the mesher's sample grid
+// on the GPU. Everything works without it, more slowly.
+const GM = typeof SinterGLMesh !== 'undefined' ? SinterGLMesh : null;
 const MAXFIELDS = 4;
-const { PRIMS, PRIM_KEYS, OPS, RAD, dimIsLength, dimUnit,
+// There is no MAXN here any more. How many shapes fit in a uniform block is
+// still ours to know, but it is not a constant and it is not a rule about
+// documents: it is read off the driver below, and a model past it is *drawn*
+// differently rather than refused. See "two ways to draw it".
+const { PRIMS, PRIM_KEYS, OPS, RAD, dimIsLength, dimUnit, roundSlot,
         decodeField, encodeField, sampleField,
         smin, smax, invRot,
         sceneSDF, sceneBounds, surfaceNets, meshToSTL } = SF;
+
+// `baked` on a primitive means its shape is not in the node: it lives in a
+// library on the document and the node's `fi` says which entry. The kernel
+// marks its profile, wire, sweep and construct that way too, so where this
+// editor means a baked *field* — the only one of them it can author, and the
+// only one whose `fi` is a texture unit — it says so rather than asking
+// whether the primitive is baked.
+const isField = n => n && n.t === 'field';
 
 // ======================================================================
 // document / state
@@ -1651,9 +3515,14 @@ function undo() {
   if (typeof d.activeBody === 'number') activeBody = d.activeBody;
   syncBodies(); resetPicked();
   document.getElementById('undoBtn').disabled = !undoStack.length;
-  rebuildShader(); renderList(); save(); needDraw();
+  sceneChanged(); renderList(); save(); needDraw();
 }
+// Every edit ends here — that is what makes this the one place the meshed
+// view can be invalidated from without hunting down each mutation. A camera
+// move or a resize never saves, which is exactly the distinction the mesh
+// cares about: the model changed, so the triangles are of something else.
 function save() {
+  dropMesh();
   try { localStorage.setItem(STORE, JSON.stringify(
       { nodes, bodies, sel, activeBody,
         fields: SF.fields.length ? SF.fields.map(encodeField) : undefined })); }
@@ -1666,8 +3535,7 @@ function save() {
 function adopt(doc) {
   const list = (doc && (doc.nodes || doc)) || [];
   if (!Array.isArray(list)) return false;
-  const kept = list.filter(n => n && PRIMS[n.t]).slice(0, MAXN)
-                   .map(n => makeNode(n.t, n));
+  const kept = list.filter(n => n && PRIMS[n.t]).map(n => makeNode(n.t, n));
   if (!kept.length) return false;
   // Baked fields, decoded before anything else is committed: a corrupt one
   // should fail the load, not half-apply it. `field` (singular) is the shape
@@ -1689,8 +3557,8 @@ function adopt(doc) {
   for (const n of nodes) {
     if (typeof n.b !== 'number') n.b = 0;
     if (typeof n.fi !== 'number') n.fi = 0;
-    if (PRIMS[n.t].baked) n.fi = Math.min(Math.max(n.fi, 0),
-                                          Math.max(SF.fields.length - 1, 0));
+    if (isField(n)) n.fi = Math.min(Math.max(n.fi, 0),
+                                    Math.max(SF.fields.length - 1, 0));
     if (n.op === 'add') n.tg = null;
     else if (n.tg && !Array.isArray(n.tg)) n.tg = null;
     if (Array.isArray(n.tg)) n.tg = n.tg.filter(id => typeof id === 'number');
@@ -1719,14 +3587,44 @@ if (!load()) {
 }
 
 // ======================================================================
-// WebGL2 raymarcher
+// WebGL2 — two ways to draw it
 // ======================================================================
+// The raymarcher runs the kernel's GLSL per pixel: shadows, ambient
+// occlusion, the selection blue mixed across a blend with the same weight the
+// distance is. It is the better picture and it is the one this editor is for.
+// What it cannot do is scale — every shape in the scene is unrolled into
+// `map()`, and `map()` runs a few hundred times per ray.
+//
+// So there is a second path: mesh the same field with the kernel's own
+// surface nets and draw the triangles. Its cost is in the *build*, once per
+// edit, and then it draws for nothing however many shapes went into it. That
+// makes it the right picture in two places — for a model past what the
+// marcher's uniforms hold, and as a stand-in while the camera is moving,
+// where the shape is not changing and only the view is.
 const canvas = document.getElementById('view');
 const gl = canvas.getContext('webgl2', { antialias: false, alpha: false });
 if (!gl) {
   showErr('WebGL2 is not available — on iPhone use Safari or Chrome, iOS 15+');
   throw new Error('no webgl2');
 }
+
+// ---------- what this GPU can hold ----------
+// Three vec4 per shape, plus the camera, the tints and the tolerances. What
+// is left of the fragment uniform block after those is how many shapes can be
+// handed to a shader at once — a number the driver reports rather than one to
+// guess at. GLES 3.0 guarantees 224 vectors and a desktop typically has 1024,
+// so this is between 69 and 336 shapes where the old constant said 32.
+const UNI = gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS) || 224;
+const SLOTS = Math.max(8, Math.floor((UNI - 16) / 3));
+// glmesh compiles the same map() with none of the shading around it, so it
+// gets the whole allowance. Past this the grid is filled in JavaScript
+// instead — slower, same answer, and no ceiling.
+const GPU_N = SLOTS;
+// The marcher stops short of the uniforms, and deliberately. Fitting is not
+// the same as being worth drawing: a hundred shapes unrolled into a loop that
+// runs 260 times a ray is a slideshow, while the mesh of the same model draws
+// in a millisecond. This is where the cheaper of the two changes hands.
+const RAY_N = Math.min(SLOTS, matchMedia('(pointer: coarse)').matches ? 48 : 96);
 function compile(type, src) {
   const s = gl.createShader(type);
   gl.shaderSource(s, src); gl.compileShader(s);
@@ -1749,7 +3647,19 @@ const QUAD_VS =
 'const vec2 v[3] = vec2[3](vec2(-1.,-1.), vec2(3.,-1.), vec2(-1.,3.));\n' +
 'void main(){ gl_Position = vec4(v[gl_VertexID], 0.0, 1.0); }';
 
-function fragSource(mapBody) {
+// The libraries a slotted primitive's shape comes out of. This editor can
+// author only one of the four — baked fields — but a document written
+// elsewhere can name any of them, and `slotList` hands back the primitive's
+// own default for a slot nothing has filled, so an unknown one draws a shape
+// rather than failing to compile.
+const slotsFor = plan => ({
+  profile: SF.slotList('profile', SF.profiles, GL.maxSlot(plan, 'profile')),
+  wire: SF.slotList('wire', SF.wires, GL.maxSlot(plan, 'wire')),
+  sweep: SF.slotList('sweep', SF.sweeps, GL.maxSlot(plan, 'sweep')),
+  construct: SF.slotList('construct', SF.constructs, GL.maxSlot(plan, 'construct'))
+});
+
+function fragSource(plan, mapBody) {
   return `#version 300 es
 precision highp float;
 out vec4 frag;
@@ -1757,7 +3667,7 @@ uniform vec2 uRes;
 uniform vec3 uEye;
 uniform mat3 uCam;          // columns: right, up, forward
 uniform float uFocal;
-uniform vec4 uD[${MAXN * 3}];
+uniform vec4 uD[${SLOTS * 3}];
 uniform vec3 uTint;
 uniform vec3 uSelTint;
 // x*t + y: how close a ray has to get before it counts as a hit. Sphere
@@ -1766,10 +3676,14 @@ uniform vec3 uSelTint;
 // is down, tight once the view settles.
 uniform vec2 uHit;
 ${GL.samplerDecls(MAXFIELDS).trimEnd()}
+${GL.foldSource()}
 
 // How much of the *accumulated* side survives a smin/smax. The colour has to
 // be mixed with the same weight the distance is, or the blue would sit off
 // the blend instead of fading across it. Set by map(), read after the hit.
+// These are the folds' twins and have to be kept in step with them by hand:
+// smin's h, and smax's, which is smin's with the sign of the difference
+// turned round.
 float gSel;
 float wmin(float a, float b, float k){
   return (k <= 0.0) ? ((a < b) ? 1.0 : 0.0)
@@ -1779,25 +3693,8 @@ float wmax(float a, float b, float k){
   return (k <= 0.0) ? ((a > b) ? 1.0 : 0.0)
                     : clamp(0.5 - 0.5*(b - a)/k, 0.0, 1.0);
 }
-
-float smin(float a, float b, float k){
-  if (k <= 0.0) return min(a, b);
-  float h = clamp(0.5 + 0.5*(b - a)/k, 0.0, 1.0);
-  return mix(b, a, h) - k*h*(1.0 - h);
-}
-float smax(float a, float b, float k){
-  if (k <= 0.0) return max(a, b);
-  float h = clamp(0.5 - 0.5*(b - a)/k, 0.0, 1.0);
-  return mix(b, a, h) + k*h*(1.0 - h);
-}
-vec3 invRot(vec3 p, vec3 e){
-  float c, s; vec3 q = p;
-  c = cos(e.z); s = sin(e.z); q = vec3( c*q.x + s*q.y, -s*q.x + c*q.y, q.z);
-  c = cos(e.y); s = sin(e.y); q = vec3( c*q.x - s*q.z, q.y, s*q.x + c*q.z);
-  c = cos(e.x); s = sin(e.x); q = vec3( q.x, c*q.y + s*q.z, -s*q.y + c*q.z);
-  return q;
-}
 ${GL.library(PRIM_KEYS)}
+${GL.slotBlock(plan, slotsFor(plan))}
 
 float map(vec3 P){
   float d = 1e9, dB, di, w, sw = 0.0, swB = 0.0; vec3 q;
@@ -1908,20 +3805,41 @@ gl.bindVertexArray(null);
 
 const emptyVAO = gl.createVertexArray();
 let prog = null, U = {};
-const uData = new Float32Array(MAXN * 12);
+// Which uniform slot each shape's data goes in, for whatever was last
+// compiled. Empty when the model is past RAY_N and no shader was built.
+let slotAt = new Map();
+let rayFits = true;
+const uData = new Float32Array(SLOTS * 12);
 
-function rebuildShader() {
+// The *structure* of the model changed: which shapes exist, what type or
+// operation they are, which body they build or cut, whether they are mirrored.
+// Values — a position, a radius, a blend — do not come through here, because
+// they only move uniforms and the compiled shader already reads those.
+function sceneChanged() {
+  dropMesh();
+  const plan = buildPlan(nodes);
+  // Slots are per *shape*, not per appearance: a cut aimed at three bodies is
+  // emitted three times in map() and packed once.
+  const at = new Map();
+  for (const part of plan)
+    for (const n of part.nodes) if (!at.has(n)) at.set(n, at.size);
+  slotAt = at;
+  rayFits = at.size <= RAY_N;
+  if (!rayFits) {
+    // Nothing to compile — the mesh is the picture now. The old program goes
+    // back to the driver rather than sitting there holding a model it cannot
+    // draw.
+    if (prog) { gl.deleteProgram(prog); prog = null; }
+    errbar.style.display = 'none';
+    scheduleProxy();
+    return;
+  }
   let body = '';
-  const used = nodes.slice(0, MAXN);
-  // uniform slots stay keyed to a shape's index in `nodes`, so a shape that
-  // several bodies cut is emitted several times but packed only once
-  const slot = new Map();
-  used.forEach((n, i) => slot.set(n, i));
-  buildPlan(used).forEach(part => {
+  for (const part of plan) {
     body += '  dB = 1e9; swB = 0.0;\n';
-    part.nodes.forEach(n => {
-      const i = slot.get(n);
-      if (i === undefined) return;
+    for (const n of part.nodes) {
+      const i = at.get(n);
+      if (i === undefined) continue;
       const b = 3 * i;
       body += '  q = P;\n';
       // mirror the *world* point, so a shape at x = 20 also appears at x = -20
@@ -1929,10 +3847,14 @@ function rebuildShader() {
       if (n.my) body += '  q.y = abs(q.y);\n';
       if (n.mz) body += '  q.z = abs(q.z);\n';
       body += `  q = invRot(q - uD[${b}].xyz, uD[${b + 1}].xyz);\n`;
-      // GL.call knows the sampler-first calling convention for baked
-      // primitives, so this no longer has to.
-      body += `  di = ${GL.call(n.t, 'q', `uD[${b + 2}].xyz`, `uD[${b + 1}].w`,
-                    Math.min(Math.max(n.fi || 0, 0), MAXFIELDS - 1))};\n`;
+      // GL.call knows the sampler-first calling convention for a baked field
+      // and the slot-in-the-name convention for a compiled outline, so this
+      // no longer has to. Only a field's slot is a texture unit and only a
+      // field's is clamped to the texture budget.
+      const fi = isField(n) ? Math.min(Math.max(n.fi || 0, 0), MAXFIELDS - 1)
+                            : Math.max(n.fi || 0, 0);
+      body += `  di = ${GL.call(n.t, 'q', `uD[${b + 2}].xyz`,
+                                `uD[${b + 1}].w`, fi)};\n`;
       // weight first, then the distance: wmin/wmax need the pre-blend dB
       if (n.op === 'add') {
         body += `  w = wmin(dB, di, uD[${b}].w);\n`;
@@ -1945,22 +3867,24 @@ function rebuildShader() {
         body += `  dB = smax(dB, di, uD[${b}].w);\n`;
       }
       body += `  swB = mix(uD[${b + 2}].w, swB, w);\n`;
-    });
+    }
     // plain min: bodies must not blend, so the colour switches rather than fades
     body += '  if (dB < d) { d = dB; sw = swB; }\n';
-  });
+  }
   if (!body) body = '  d = 1e9;\n';
   let np;
-  try { np = makeProgram(QUAD_VS, fragSource(body)); }
+  try { np = makeProgram(QUAD_VS, fragSource(plan, body)); }
   catch (e) { showErr(String(e.message).slice(0, 200)); return; }
   if (prog) gl.deleteProgram(prog);
   prog = np;
   U = {};
-  for (const k of ['uRes', 'uEye', 'uCam', 'uFocal', 'uTint', 'uSelTint', 'uHit',
-                 'uField0', 'uField1', 'uField2', 'uField3'])
+  for (const k of ['uRes', 'uEye', 'uCam', 'uFocal', 'uTint', 'uSelTint', 'uHit'])
     U[k] = gl.getUniformLocation(prog, k);
+  for (let i = 0; i < MAXFIELDS; i++)
+    U['uField' + i] = gl.getUniformLocation(prog, 'uField' + i);
   U.uD = gl.getUniformLocation(prog, 'uD[0]');
   errbar.style.display = 'none';
+  scheduleProxy();
 }
 
 // The field as a 3D texture, uploaded once and left on unit 0. A scene with
@@ -2000,18 +3924,152 @@ function bindField() {
 }
 
 function packUniforms() {
-  uData.fill(0);
-  nodes.slice(0, MAXN).forEach((n, i) => {
-    const b = 12 * i;
-    uData[b] = n.p[0]; uData[b + 1] = n.p[1]; uData[b + 2] = n.p[2];
-    uData[b + 3] = Math.max(n.k, 0);
-    uData[b + 4] = n.r[0] * Math.PI / 180;
-    uData[b + 5] = n.r[1] * Math.PI / 180;
-    uData[b + 6] = n.r[2] * Math.PI / 180;
-    uData[b + 7] = n.round || 0;
-    uData[b + 8] = n.d[0]; uData[b + 9] = n.d[1]; uData[b + 10] = n.d[2];
-    uData[b + 11] = picked.has(n) ? 1 : 0;   // spare slot: drives the blue
-  });
+  // Three vec4 a shape, in a fixed order, is a contract between the source
+  // glsl.js generated and whoever fills the array — so it is filled by the
+  // same file rather than written out a second time here. That includes the
+  // rule that a baked field takes its sample *range* through the slot every
+  // other primitive uses for corner rounding: pack `round` there by hand and
+  // the field comes out multiplied by zero, which draws as its bounding box
+  // and looks exactly like a texture that never arrived.
+  GL.packPlan(slotAt, { maxN: SLOTS, roundSlot, into: uData });
+  // The twelfth float is the one the kernel has no opinion about. It drives
+  // the blue.
+  for (const [n, i] of slotAt) uData[12 * i + 11] = picked.has(n) ? 1 : 0;
+}
+
+// ======================================================================
+// the meshed view
+// ======================================================================
+// The same field, found the other way: sampled on a grid and walked into
+// triangles by the kernel's surface nets — the same mesher the STL comes out
+// of, at a coarser spacing. Once built it draws as a vertex buffer, which
+// costs the same for four hundred shapes as for four.
+//
+// Plain by design. It has no selection blue, because a triangle does not know
+// which shape it came from and the wireframe boxes already say what is picked;
+// no shadows and no ambient occlusion, because those are ray queries against a
+// field this path does not have. What it does have is the outline, and the
+// outline is the thing you are modelling.
+const MESH_VS = `#version 300 es
+layout(location=0) in vec3 aP;
+layout(location=1) in vec3 aN;
+uniform mat4 uMVP;
+out vec3 vN; out vec3 vW;
+void main(){ vN = aN; vW = aP; gl_Position = uMVP*vec4(aP, 1.0); }`;
+const MESH_FS = `#version 300 es
+precision highp float;
+in vec3 vN; in vec3 vW; out vec4 frag;
+uniform vec3 uTint; uniform vec3 uEye;
+void main(){
+  vec3 n = normalize(vN);
+  vec3 L1 = normalize(vec3(0.42, -0.5, 0.76));
+  vec3 L2 = normalize(vec3(-0.6, 0.55, 0.25));
+  // the marcher's lighting with its two ray queries replaced by their
+  // averages, so switching between the pictures is not a change of scene
+  float dif = max(dot(n, L1), 0.0)*0.78*0.80 + max(dot(n, L2), 0.0)*0.22;
+  vec3 V = normalize(uEye - vW);
+  float spec = pow(max(dot(n, normalize(L1 + V)), 0.0), 40.0)*0.35;
+  float amb = (0.30 + 0.12*n.z)*0.85;
+  frag = vec4(pow(uTint*(amb + dif) + vec3(spec), vec3(0.62)), 1.0);
+}`;
+
+let meshProg = null, meshU = {}, meshVao = null, meshBufs = [], meshCount = 0;
+let meshStale = true, meshTris = 0, meshMs = 0, meshRes = 0, meshOn = '';
+
+// Marks the triangles as being of a different model. Called from save(), which
+// every edit ends with — see the note there.
+function dropMesh() { meshStale = true; }
+
+function freeMesh() {
+  if (meshVao) gl.deleteVertexArray(meshVao);
+  for (const b of meshBufs) gl.deleteBuffer(b);
+  meshVao = null; meshBufs = []; meshCount = 0;
+}
+
+// glmesh fills the grid by compiling the same map() and rendering it into a
+// float target: one SDF evaluation per corner, which is essentially all of the
+// cost of meshing, done on the hardware that is good at it. Resolved once,
+// because asking makes a context.
+let gpuSample;
+function sampler() {
+  if (gpuSample === undefined)
+    gpuSample = (GM && GM.available(gl))
+      ? GM.sampler({ gl, maxN: GPU_N, maxFields: MAXFIELDS }) : null;
+  return gpuSample;
+}
+const planCount = plan => {
+  const seen = new Set();
+  for (const part of plan) for (const n of part.nodes) seen.add(n);
+  return seen.size;
+};
+
+// Grid spacing for a picture, which is a different question from the STL's.
+// Here the answer wanted is "as fine as a few milliseconds buys", so it comes
+// from a sample budget and the model's own size rather than from the export
+// slider. On the GPU that is a grid around 120 cubed; in JavaScript it has to
+// be an order of magnitude coarser, and the picture says so by looking it.
+const VIEW_SAMPLES = matchMedia('(pointer: coarse)').matches ? 6e5 : 1.6e6;
+function viewRes(B) {
+  const vol = [0, 1, 2].reduce((a, i) => a * Math.max(B.hi[i] - B.lo[i], 1), 1);
+  const budget = sampler() ? VIEW_SAMPLES : 1.5e5;
+  return Math.min(Math.max(Math.cbrt(vol / budget), 0.25), 8);
+}
+
+function buildMesh() {
+  const t0 = Date.now();
+  // whatever happens below, do not come back and try it again next frame
+  meshStale = false;
+  const plan = buildPlan(nodes);
+  const B = sceneBounds(shownNodes());
+  if (!B || !plan.length) { freeMesh(); meshTris = 0; return; }
+  const res = viewRes(B);
+  // Past the GPU's uniform block there is no shader to fill the grid with, so
+  // the kernel's own JavaScript does it. Slower by a lot; the same answer.
+  const use = sampler() && planCount(plan) <= GPU_N ? sampler() : null;
+  let m = null;
+  try { m = SF.mesh(plan, { res, bounds: B, sample: use, maxSamples: 8e6 }); }
+  catch (e) { freeMesh(); meshTris = 0; showErr('view: ' + e.message); return; }
+  if (!m || !m.indices.length) { freeMesh(); meshTris = 0; return; }
+
+  const P = m.positions, I = m.indices;
+  const N = new Float32Array(P.length);
+  for (let t = 0; t < I.length; t += 3) {
+    const a = 3 * I[t], b = 3 * I[t + 1], c = 3 * I[t + 2];
+    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
+    const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    for (const o of [a, b, c]) { N[o] += nx; N[o + 1] += ny; N[o + 2] += nz; }
+  }
+  if (!meshProg) {
+    meshProg = makeProgram(MESH_VS, MESH_FS);
+    for (const k of ['uMVP', 'uTint', 'uEye'])
+      meshU[k] = gl.getUniformLocation(meshProg, k);
+  }
+  // The last mesh's buffers go back to the driver first. An edit rebuilds this
+  // every time the view settles, and a vertex array and three buffers apiece
+  // is real memory that nothing else was ever going to reclaim.
+  freeMesh();
+  meshVao = gl.createVertexArray();
+  gl.bindVertexArray(meshVao);
+  const put = (data, loc) => {
+    const buf = gl.createBuffer();
+    meshBufs.push(buf);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0);
+  };
+  put(P, 0); put(N, 1);
+  const eb = gl.createBuffer();
+  meshBufs.push(eb);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, eb);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, I, gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  meshCount = I.length;
+  meshTris = I.length / 3;
+  meshRes = res;
+  meshOn = use ? 'GPU' : 'JS';
+  meshMs = Date.now() - t0;
 }
 
 // ---------- camera ----------
@@ -2142,31 +4200,110 @@ function selectionOutlines() {
   return out;
 }
 
-// ---------- draw loop: full res when idle, coarse while a finger is down ----
-let pending = false, interacting = false, idleTimer = 0;
+// The build plate, drawn as lines because the meshed view has no shader to
+// draw it in. The marcher keeps its own, which fades with distance and takes
+// the model's shadow — neither of which this can do.
+let gridCache = null;
+function plateGrid() {
+  const B = sceneBounds(shownNodes());
+  const reach = B ? Math.max(...[0, 1].map(a =>
+    Math.max(Math.abs(B.lo[a]), Math.abs(B.hi[a])))) : 60;
+  const half = Math.max(Math.ceil(reach / 50) * 50, 100);
+  if (gridCache && gridCache.half === half) return gridCache.data;
+  const out = [];
+  for (let v = -half; v <= half; v += 10) {
+    out.push(-half, v, 0, half, v, 0);
+    out.push(v, -half, 0, v, half, 0);
+  }
+  gridCache = { half, data: new Float32Array(out) };
+  return gridCache.data;
+}
+
+// ---------- draw loop ----------
+// Full resolution when idle, coarse while a finger is down — and, since there
+// are two pictures now, whichever of them can be had for the frame.
+//
+// Two costs three orders of magnitude apart, and the scheduling follows from
+// how far apart they are. A meshed frame is a buffer draw; a raymarched frame
+// pays for every shape in the model on every pixel. Meshing costs about what
+// one raymarched frame costs — the grid fill runs the same map() over a
+// comparable number of points — so a mesh pays for itself on the second frame
+// of any drag.
+let pending = false, interacting = false, camMoving = false;
+let idleTimer = 0, proxyTimer = 0;
 function needDraw() {
   if (pending) return;
   pending = true;
   requestAnimationFrame(draw);
 }
-function markInteracting() {
+// `isCamera` is the whole distinction the proxy rests on. A camera move leaves
+// the model alone, so a mesh built before it is still a mesh of what is on the
+// screen. A slider move does not, and standing a mesh of the previous shape in
+// front of the marcher would show the model not following the hand.
+function markInteracting(isCamera) {
   interacting = true;
+  camMoving = !!isCamera;
   clearTimeout(idleTimer);
-  idleTimer = setTimeout(() => { interacting = false; needDraw(); }, 180);
+  clearTimeout(proxyTimer);
+  idleTimer = setTimeout(settle, 180);
   needDraw();
 }
+function settle() {
+  interacting = false;
+  needDraw();
+  scheduleProxy();
+}
+// Once the settled picture is up, pay for the mesh that the next drag will
+// stand in front of. Two conditions on that, and both are about it being a
+// saving rather than a habit: the grid fill has to be on the GPU, since
+// meshing in JavaScript costs more than the frames it would save, and the
+// scene has to be big enough for a raymarched frame to be worth avoiding. A
+// four-shape model already draws in a millisecond, and meshing it every time
+// a slider is let go would be pure overhead.
+//
+// Called from the end of an interaction and from a structural change, so the
+// first orbit after opening a document has a mesh to use rather than the
+// second.
+function scheduleProxy() {
+  clearTimeout(proxyTimer);
+  proxyTimer = setTimeout(() => {
+    if (interacting || !meshStale) return;
+    if (!rayFits || (sampler() && slotAt.size >= 8)) {
+      buildMesh(); needDraw(); scheduleInfo();
+    }
+  }, 140);
+}
+
 function draw() {
   pending = false;
-  if (!prog) return;
+  // What can be drawn this frame, which is not always what the model would
+  // prefer. A stale mesh is a fine stand-in while the camera moves — it is
+  // only a stand-in — but never while the model itself is changing.
+  const proxy = rayFits && interacting && camMoving && meshCount && !meshStale;
+  const meshed = !rayFits || proxy;
+  // Past the marcher's budget the mesh is the only picture there is, so it
+  // gets built here when it has to be, on a frame a raymarch would have cost
+  // about as much anyway. Not while an edit is still in flight, though: the
+  // next pointer event would throw it away.
+  if (!rayFits && meshStale && (!interacting || !meshCount)) buildMesh();
+  if (!meshed && !prog) return;
+
   const dpr = Math.min(devicePixelRatio || 1, 2);
-  const scale = interacting ? 0.55 : 1;
+  // Dropping the render scale is a raymarch trick — it is the per-pixel cost
+  // that hurts. A mesh is cheap enough to draw full size with a finger down.
+  const scale = (interacting && !meshed) ? 0.55 : 1;
   const cw = canvas.clientWidth || innerWidth, ch = canvas.clientHeight || innerHeight;
   const w = Math.max(1, Math.round(cw * dpr * scale));
   const h = Math.max(1, Math.round(ch * dpr * scale));
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
   gl.viewport(0, 0, w, h);
-  gl.disable(gl.DEPTH_TEST);
 
+  if (meshed) drawMeshed(w, h); else drawMarched(w, h);
+  drawOverlay(w, h, meshed);
+}
+
+function drawMarched(w, h) {
+  gl.disable(gl.DEPTH_TEST);
   const { eye, r, u, f } = camBasis();
   packUniforms();
   gl.useProgram(prog);
@@ -2184,16 +4321,48 @@ function draw() {
   gl.uniform4fv(U.uD, uData);
   gl.bindVertexArray(emptyVAO);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.bindVertexArray(null);
+}
 
+function drawMeshed(w, h) {
+  gl.enable(gl.DEPTH_TEST);
+  gl.clearColor(0.071, 0.086, 0.104, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  if (!meshCount) return;
+  const { eye } = camBasis();
+  gl.useProgram(meshProg);
+  gl.uniformMatrix4fv(meshU.uMVP, false, mvpMatrix(w / h));
+  gl.uniform3f(meshU.uTint, 0.91, 0.53, 0.22);
+  gl.uniform3f(meshU.uEye, eye[0], eye[1], eye[2]);
+  gl.bindVertexArray(meshVao);
+  gl.drawElements(gl.TRIANGLES, meshCount, gl.UNSIGNED_INT, 0);
+  gl.bindVertexArray(null);
+}
+
+// One box per selected shape, in both pictures — which is what carries the
+// selection when the meshed one cannot colour it.
+function drawOverlay(w, h, meshed) {
   const lines = selectionOutlines();
+  const grid = meshed ? plateGrid() : null;
+  if (!lines && !grid) return;
+  gl.useProgram(lineProg);
+  gl.bindVertexArray(lineVAO);
+  gl.bindBuffer(gl.ARRAY_BUFFER, lineBuf);
+  gl.uniformMatrix4fv(gl.getUniformLocation(lineProg, 'uMVP'), false,
+                      mvpMatrix(w / h));
+  const uC = gl.getUniformLocation(lineProg, 'uC');
+  if (grid) {
+    // the plate is *behind* things, so it is the one overlay that keeps its
+    // depth test
+    gl.enable(gl.DEPTH_TEST);
+    gl.bufferData(gl.ARRAY_BUFFER, grid, gl.DYNAMIC_DRAW);
+    gl.uniform3f(uC, 0.17, 0.21, 0.26);
+    gl.drawArrays(gl.LINES, 0, grid.length / 3);
+  }
   if (lines && lines.length) {
-    gl.useProgram(lineProg);
-    gl.bindVertexArray(lineVAO);
-    gl.bindBuffer(gl.ARRAY_BUFFER, lineBuf);
+    gl.disable(gl.DEPTH_TEST);
     gl.bufferData(gl.ARRAY_BUFFER, lines, gl.DYNAMIC_DRAW);
-    gl.uniformMatrix4fv(gl.getUniformLocation(lineProg, 'uMVP'), false,
-                        mvpMatrix(w / h));
-    gl.uniform3f(gl.getUniformLocation(lineProg, 'uC'), 0.37, 0.78, 0.94);
+    gl.uniform3f(uC, 0.37, 0.78, 0.94);
     gl.drawArrays(gl.LINES, 0, lines.length / 3);
   }
   gl.bindVertexArray(null);
@@ -2231,11 +4400,15 @@ canvas.addEventListener('pointermove', e => {
   if (!pts.has(e.pointerId)) return;
   pts.set(e.pointerId, [e.clientX, e.clientY]);
   const P = [...pts.values()];
+  // Move mode drags the shape, not the view — so the frame it asks for is not
+  // one a mesh of the previous shape may stand in for.
+  let camera = true;
   if (P.length === 1 && last1) {
     const dx = e.clientX - last1[0], dy = e.clientY - last1[1];
     last1 = [e.clientX, e.clientY];
     if (mode === 'grab') {
       const { r, u, s } = screenAxes();
+      camera = false;
       moveSelected((r[0] * dx - u[0] * dy) * s, (r[1] * dx - u[1] * dy) * s,
                    (r[2] * dx - u[2] * dy) * s);
     } else {
@@ -2251,6 +4424,7 @@ canvas.addEventListener('pointermove', e => {
       const { r, u, s } = screenAxes();
       if (mode === 'grab' && picked.size) {
         // two fingers in Move mode raise/lower along the build direction
+        camera = false;
         moveSelected(0, 0, -dy * s);
       } else {
         cam.tgt[0] -= (r[0] * dx - u[0] * dy) * s;
@@ -2260,21 +4434,21 @@ canvas.addEventListener('pointermove', e => {
     }
     lastPinch = d; lastMid = mid;
   }
-  markInteracting();
+  markInteracting(camera);
 });
 function endPtr(e) {
   pts.delete(e.pointerId);
   const P = [...pts.values()];
   last1 = P.length === 1 ? P[0] : null;
   if (P.length < 2) { lastPinch = 0; lastMid = null; }
-  markInteracting();
+  markInteracting(true);
 }
 canvas.addEventListener('pointerup', endPtr);
 canvas.addEventListener('pointercancel', endPtr);
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
   cam.dist = Math.min(Math.max(cam.dist * Math.exp(e.deltaY * 0.0012), 8), 2000);
-  markInteracting();
+  markInteracting(true);
 }, { passive: false });
 // iOS fires these on double-tap zoom attempts over the canvas
 document.addEventListener('gesturestart', e => e.preventDefault());
@@ -2319,7 +4493,7 @@ function renderBaked() {
   const box = $('baked');
   box.innerHTML = '';
   SF.fields.forEach((f, i) => {
-    const used = nodes.filter(n => PRIMS[n.t].baked && n.fi === i).length;
+    const used = nodes.filter(n => isField(n) && n.fi === i).length;
     const el = document.createElement('div');
     el.className = 'node body' + (i === activeField ? ' sel' : '');
     el.innerHTML =
@@ -2331,10 +4505,12 @@ function renderBaked() {
     el.onclick = ev => {
       const act = ev.target.dataset && ev.target.dataset.act;
       if (act === 'place') {
-        if (nodes.length >= MAXN) { showErr('Shape limit is ' + MAXN); return; }
         snapshot();
+        // No `round`: the kernel takes a field's sample range through that
+        // slot itself, off the library entry, so writing it onto the node
+        // would only be a second copy that the next rename could not fix.
         const c = makeNode('field', { fi: i, b: activeBody, p: [0, 0, f.box[2]],
-                                      d: f.box.slice(), round: f.range });
+                                      d: f.box.slice() });
         nodes.push(c);
         sel = nodes.length - 1; picked = new Set([c]);
       } else if (act === 'rename') {
@@ -2346,10 +4522,10 @@ function renderBaked() {
         SF.fields.splice(i, 1);
         // instances after it shift down with it
         for (const n of nodes)
-          if (PRIMS[n.t].baked && n.fi > i) n.fi--;
+          if (isField(n) && n.fi > i) n.fi--;
         activeField = Math.max(0, Math.min(activeField, SF.fields.length - 1));
       } else activeField = i;
-      rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+      sceneChanged(); renderList(); renderInspector(); save(); needDraw();
     };
     box.appendChild(el);
   });
@@ -2394,12 +4570,12 @@ $('bakeBtn').onclick = () => {
     const gone = new Set(nodes.filter(spent));
     nodes = nodes.filter(n => !gone.has(n));
     const c = makeNode('field', { fi: r.fi, b: id, p: r.centre,
-                                  d: r.box.slice(), round: r.range });
+                                  d: r.box.slice() });
     nodes.push(c);
     sel = nodes.indexOf(c); picked = new Set([c]);
     activeField = r.fi;
     syncBodies(); syncPicked();
-    rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+    sceneChanged(); renderList(); renderInspector(); save(); needDraw();
   } catch (e) { undo(); showErr('bake: ' + e.message); }
 };
 
@@ -2439,7 +4615,7 @@ function renderBodies() {
         activeBody = b.id;
         pickBody(b.id);
       }
-      rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+      sceneChanged(); renderList(); renderInspector(); save(); needDraw();
     };
     box.appendChild(el);
   });
@@ -2498,13 +4674,13 @@ function renderList() {
       `<button class="ic" data-act="down">▼</button>`;
     el.onclick = ev => {
       const act = ev.target.dataset && ev.target.dataset.act;
-      if (act === 'on') { snapshot(); n.on = !n.on; rebuildShader(); }
+      if (act === 'on') { snapshot(); n.on = !n.on; sceneChanged(); }
       else if (act === 'up' && i > 0) {
         snapshot(); nodes.splice(i - 1, 0, nodes.splice(i, 1)[0]);
-        sel = i - 1; rebuildShader();
+        sel = i - 1; sceneChanged();
       } else if (act === 'down' && i < nodes.length - 1) {
         snapshot(); nodes.splice(i + 1, 0, nodes.splice(i, 1)[0]);
-        sel = i + 1; rebuildShader();
+        sel = i + 1; sceneChanged();
       } else {
         // picking a shape also moves you into its body, so the next shape you
         // add lands where you are looking
@@ -2514,7 +4690,9 @@ function renderList() {
     };
     box.appendChild(el);
   });
-  $('nodeCount').textContent = nodes.length + '/' + MAXN;
+  // A count, not a ration. This used to read "17/32", and the 32 in it was
+  // this GPU's uniform block leaking into the document.
+  $('nodeCount').textContent = nodes.length + (rayFits ? '' : ' · meshed view');
   $('selHint').textContent = picked.size > 1
     ? picked.size + ' selected · Place moves and turns them as one'
     : picked.size ? '1 selected'
@@ -2546,7 +4724,7 @@ function sliderRow(label, unit, get, set, min, max, step) {
     set(Math.min(Math.max(v, min), max));
     show(); save(); needDraw(); scheduleInfo();
   };
-  inp.addEventListener('input', () => { commit(parseFloat(inp.value)); markInteracting(); });
+  inp.addEventListener('input', () => { commit(parseFloat(inp.value)); markInteracting(false); });
   inp.addEventListener('change', () => { touched = false; needDraw(); });
   const bump = s => () => {
     // round to the step grid, then to 4 places so 0.1 steps stay 0.1
@@ -2583,7 +4761,7 @@ function chip(text, on, fn) {
   b.onclick = () => {
     snapshot(); fn();
     syncBodies();
-    rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+    sceneChanged(); renderList(); renderInspector(); save(); needDraw();
   };
   return b;
 }
@@ -2655,7 +4833,12 @@ function renderInspector() {
   typeRow.className = 'row';
   typeRow.innerHTML = '<label><span>Type</span></label>';
   const selEl = document.createElement('select');
-  PRIM_KEYS.forEach(k => {
+  // What can be turned into, plus whatever this shape already is — a document
+  // may carry a primitive this editor would not offer to make, and the type
+  // row has to be able to name it.
+  const types = offered();
+  if (!types.includes(n.t)) types.push(n.t);
+  types.forEach(k => {
     const o = document.createElement('option');
     o.value = k; o.textContent = PRIMS[k].name; o.selected = k === n.t;
     selEl.appendChild(o);
@@ -2664,7 +4847,7 @@ function renderInspector() {
     snapshot();
     n.t = selEl.value;
     n.d = PRIMS[n.t].def.slice();
-    rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+    sceneChanged(); renderList(); renderInspector(); save(); needDraw();
   };
   typeRow.appendChild(selEl);
   host.appendChild(typeRow);
@@ -2682,7 +4865,7 @@ function renderInspector() {
     b.onclick = () => {
       snapshot(); n.op = k;
       syncBodies();   // an add turned into a cut can strand its old body
-      rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+      sceneChanged(); renderList(); renderInspector(); save(); needDraw();
     };
     seg.appendChild(b);
   });
@@ -2742,7 +4925,7 @@ function renderInspector() {
     b.textContent = 'Mirror ' + lbl;
     b.onclick = () => {
       snapshot(); n[key] = !n[key];
-      rebuildShader(); renderInspector(); save(); needDraw();
+      sceneChanged(); renderInspector(); save(); needDraw();
     };
     tg.appendChild(b);
   });
@@ -2754,14 +4937,21 @@ function renderInspector() {
 // The add-shape AABB is what the mesher sweeps, but it ignores every cut, so
 // it is a poor size readout. Probe the real field on a coarse grid instead.
 function probeSize(B) {
+  const live = buildPlan(nodes);
+  // The cost is grid points times shapes, and the shapes are no longer
+  // capped — so the grid is. A four-shape model probes exactly as finely as
+  // it always did; a two-hundred-shape one probes coarsely rather than
+  // freezing the panel for a readout that was never the accurate number
+  // anyway. (The STL is. This is a coarse grid and a bisection.)
+  const lim = Math.max(8, Math.min(56,
+    Math.round(Math.cbrt(1.5e6 / Math.max(planCount(live), 1)))));
   const span = Math.max(B.hi[0] - B.lo[0], B.hi[1] - B.lo[1],
                         B.hi[2] - B.lo[2], 1);
   const cell = span / 32;
-  const N = a => Math.max(2, Math.min(56,
+  const N = a => Math.max(2, Math.min(lim,
                  Math.ceil((B.hi[a] - B.lo[a]) / cell) + 1));
   const n = [N(0), N(1), N(2)];
   const d = [0, 1, 2].map(a => (B.hi[a] - B.lo[a]) / (n[a] - 1));
-  const live = buildPlan(nodes);
   const lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
   // For each of the six extremes keep the *deepest* sample in that outermost
   // slab, not the first one found: bisecting from a thin corner of the slab
@@ -2837,28 +5027,43 @@ function updateInfo() {
       'a Plane cut at z 0 gives it a flat base</span>' : '') +
     `<br>STL grid ≈ ${(vox / 1e6).toFixed(1)} M voxels` +
     (vox > 12e6 ? ' <span style="color:var(--note)">(coarsen it on a phone)</span>'
-                : '');
+                : '') +
+    // Which picture is on the screen, and why. A viewport that quietly
+    // changed how it draws would read as the renderer having got worse.
+    (rayFits ? '' :
+      `<br>${slotAt.size} shapes at once is past what the raymarcher holds ` +
+      `(${RAY_N}) — the viewport is meshing instead` +
+      (meshTris ? `: ${Math.round(meshTris / 1000)}k triangles at `
+                  + `${meshRes.toFixed(2)} mm, ${meshMs} ms on the ${meshOn}` : ''));
 }
 
 // ---------- add / duplicate / delete ----------
+// Which primitives this editor offers. Everything the kernel can draw from a
+// handful of numbers is here, `field` once the document has one to place —
+// and the rest of the baked family (profile, wire, sweep, construct) is not,
+// because each of those is a *drawing* held in a library on the document, and
+// MetaMeld has no surface to draw one on. They stay in the kernel and stay
+// working: a document written elsewhere that names one still opens, renders
+// and exports here.
+const offered = () => PRIM_KEYS.filter(k =>
+  !PRIMS[k].baked || (k === 'field' && SF.fields.length));
+
 $('addBtn').onclick = () => {
   openModal('Add a shape',
-    `<div class="picker">${PRIM_KEYS.filter(k => !PRIMS[k].baked || SF.fields.length)
-      .map(k =>
+    `<div class="picker">${offered().map(k =>
       `<button data-prim="${k}">${PRIMS[k].name}</button>`).join('')}</div>`,
     card => {
       card.onclick = e => {
         const b = e.target.closest('button[data-prim]');
         if (!b) return;
-        if (nodes.length >= MAXN) { showErr('Shape limit is ' + MAXN); closeModal(); return; }
         snapshot();
         const fresh = makeNode(b.dataset.prim);
-        // a field node carries no dimensions of its own: its box and its
-        // quantisation range come from the document's baked grid
-        if (PRIMS[fresh.t].baked && SF.fields.length) {
+        // a field node carries no dimensions of its own: its box comes from
+        // the document's baked grid, and its sample range the kernel reads
+        // off the library entry itself
+        if (isField(fresh) && SF.fields.length) {
           fresh.fi = Math.min(activeField, SF.fields.length - 1);
           fresh.d = SF.fields[fresh.fi].box.slice();
-          fresh.round = SF.fields[fresh.fi].range;
         }
         fresh.b = activeBody;      // build into the body you are standing in
         nodes.push(fresh);
@@ -2866,7 +5071,7 @@ $('addBtn').onclick = () => {
         if (selMode === 'single') picked = new Set();
         picked.add(fresh);
         closeModal();
-        rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+        sceneChanged(); renderList(); renderInspector(); save(); needDraw();
       };
     });
 };
@@ -2879,13 +5084,12 @@ $('dupBtn').onclick = () => {
 
   // one shape: copy it beside itself, in the body it already belongs to
   if (src.length === 1) {
-    if (nodes.length >= MAXN) { showErr('Shape limit is ' + MAXN); return; }
     snapshot();
     const c = nudge(clone(src[0]));
     nodes.splice(sel + 1, 0, c);
     sel++;
     resetPicked();
-    rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+    sceneChanged(); renderList(); renderInspector(); save(); needDraw();
     return;
   }
 
@@ -2901,10 +5105,6 @@ $('dupBtn').onclick = () => {
   // would have the copy cutting the original, so neither is brought over.
   const carried = src.filter(n =>
     n.op === 'add' || (n.tg && n.tg.length && n.tg.every(t => from.includes(t))));
-  if (nodes.length + carried.length > MAXN) {
-    showErr('Shape limit is ' + MAXN + ' — that copy needs ' + carried.length);
-    return;
-  }
 
   snapshot();
   const toNew = new Map();
@@ -2931,7 +5131,7 @@ $('dupBtn').onclick = () => {
   picked = new Set(made);
   sel = nodes.indexOf(made[0]);
   syncBodies();
-  rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+  sceneChanged(); renderList(); renderInspector(); save(); needDraw();
 };
 $('delBtn').onclick = () => {
   if (!picked.size) return;
@@ -2942,7 +5142,7 @@ $('delBtn').onclick = () => {
   sel = Math.max(0, Math.min(first, nodes.length - 1));
   resetPicked();
   syncBodies();   // keep targets and the active body pointing at what is left
-  rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+  sceneChanged(); renderList(); renderInspector(); save(); needDraw();
 };
 
 // ---------- modal ----------
@@ -2975,7 +5175,7 @@ $('startBtn').onclick = () => {
         sel = 0;
         picked = new Set();
         closeModal();
-        rebuildShader(); renderList(); renderInspector(); save();
+        sceneChanged(); renderList(); renderInspector(); save();
         frameModel();
       };
     });
@@ -3005,9 +5205,6 @@ function importDoc(d) {
   if (!Array.isArray(list) || !list.some(n => n && PRIMS[n.t]))
     throw new Error('no shapes in that file');
   const incoming = list.filter(n => n && PRIMS[n.t]).map(n => makeNode(n.t, n));
-  if (nodes.length + incoming.length > MAXN)
-    throw new Error(`that would make ${nodes.length + incoming.length} shapes; `
-                    + `the limit is ${MAXN}`);
   const rawF = d.fields || (d.field ? [d.field] : []);
   const newF = rawF.map(decodeField).filter(Boolean);
   if (SF.fields.length + newF.length > MAXFIELDS)
@@ -3033,8 +5230,8 @@ function importDoc(d) {
     n.b = mapId(n.b);
     if (n.op === 'add') n.tg = null;
     else if (Array.isArray(n.tg)) n.tg = n.tg.map(mapId);
-    if (PRIMS[n.t].baked) n.fi = fBase + Math.min(Math.max(n.fi || 0, 0),
-                                                  Math.max(newF.length - 1, 0));
+    if (isField(n)) n.fi = fBase + Math.min(Math.max(n.fi || 0, 0),
+                                            Math.max(newF.length - 1, 0));
   }
   nodes = nodes.concat(incoming);
   syncBodies();
@@ -3071,7 +5268,7 @@ $('fileInp').onchange = e => {
       snapshot();
       if (merge) { importDoc(d); setStatus('imported ' + file.name); }
       else { adopt(d); sel = 0; setStatus('opened ' + file.name); }
-      rebuildShader(); renderList(); renderInspector(); save(); frameModel();
+      sceneChanged(); renderList(); renderInspector(); save(); frameModel();
     } catch (err) { showErr('open: ' + err.message); }
   };
   r.onerror = () => showErr('open: could not read that file');
@@ -3111,7 +5308,7 @@ $('jsonBtn').onclick = () => {
           adopt(d);
           sel = 0;
           closeModal();
-          rebuildShader(); renderList(); renderInspector(); save(); frameModel();
+          sceneChanged(); renderList(); renderInspector(); save(); frameModel();
         } catch (e) { showErr('JSON: ' + e.message); }
       };
     });
@@ -3161,13 +5358,54 @@ $('stlBtn').onclick = () => {
             (cap / 1e6) + ' M) — raise the resolution number');
     return;
   }
-  let vol;
-  try { vol = new Float32Array(total); }
-  catch (e) { showErr('Out of memory for the grid — raise the resolution'); return; }
-  building = true;
-  $('stlBtn').disabled = true;
   const live = buildPlan(nodes);
   const t0 = Date.now();
+  building = true;
+  $('stlBtn').disabled = true;
+
+  // What to do with a finished mesh, whichever way the grid was filled.
+  const finish = (mesh) => {
+    const nt = mesh ? mesh.indices.length / 3 : 0;
+    building = false; $('stlBtn').disabled = false;
+    if (!nt) { showErr('The model is empty at this resolution'); setStatus(''); return; }
+    const blob = meshToSTL(mesh, 'MetaMeld(TM) model (mm) - metameld');
+    cached = { key: stlKey(res), blob };
+    setStatus(nt.toLocaleString() + ' triangles · ' +
+              ((Date.now() - t0) / 1000).toFixed(1) + ' s');
+    deliver(blob, 'metameld_model.stl', () =>
+      setStatus(nt.toLocaleString() + ' triangles ready — tap Save STL again'));
+  };
+
+  // Filling the grid is one evaluation per corner and essentially all of the
+  // cost of an export, so it goes to the GPU when there is a GPU to send it
+  // to: the same map(), compiled from the same GLSL, rendered into a float
+  // target a slab at a time. What comes back is the grid the loop below would
+  // have written, and the kernel's own mesher walks it either way.
+  const gpu = sampler() && planCount(live) <= GPU_N ? sampler() : null;
+  if (gpu) {
+    setStatus('building STL…');
+    // one frame first, so the disabled button and the status are painted
+    // before the page goes away to do it
+    requestAnimationFrame(() => {
+      let m = null;
+      try { m = SF.mesh(live, { res, bounds: B, sample: gpu, maxSamples: cap }); }
+      catch (e) {
+        building = false; $('stlBtn').disabled = false;
+        showErr('mesh: ' + e.message);
+        return;
+      }
+      finish(m);
+    });
+    return;
+  }
+
+  let vol;
+  try { vol = new Float32Array(total); }
+  catch (e) {
+    building = false; $('stlBtn').disabled = false;
+    showErr('Out of memory for the grid — raise the resolution');
+    return;
+  }
   let i = 0;
   // slice at a time, back to the event loop between slices: a phone stays
   // responsive and Safari never shows the "page is unresponsive" sheet
@@ -3189,19 +5427,7 @@ $('stlBtn').onclick = () => {
     try { mesh = surfaceNets(vol, nx, ny, nz, x0, y0, z0, res); }
     catch (e) { showErr('mesh: ' + e.message); building = false;
                 $('stlBtn').disabled = false; return; }
-    const nt = mesh.indices.length / 3;
-    if (!nt) {
-      showErr('The model is empty at this resolution');
-      building = false; $('stlBtn').disabled = false; setStatus('');
-      return;
-    }
-    const blob = meshToSTL(mesh, 'MetaMeld(TM) model (mm) - metameld');
-    cached = { key: stlKey(res), blob };
-    building = false; $('stlBtn').disabled = false;
-    setStatus(nt.toLocaleString() + ' triangles · ' +
-              ((Date.now() - t0) / 1000).toFixed(1) + ' s');
-    deliver(blob, 'metameld_model.stl', () =>
-      setStatus(nt.toLocaleString() + ' triangles ready — tap Save STL again'));
+    finish(mesh);
   };
   requestAnimationFrame(step);
 };
@@ -3264,7 +5490,7 @@ grip.addEventListener('click', () => {
 });
 
 // ---------- go ----------
-rebuildShader();
+sceneChanged();
 renderList();
 renderInspector();
 $('resVal').textContent = parseFloat($('resInp').value).toFixed(2) + ' mm';
