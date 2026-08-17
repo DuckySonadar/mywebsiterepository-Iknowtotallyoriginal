@@ -1,108 +1,40 @@
-/* Hold the SinterForm seam.
+/* Check the kernel in the file MetaMeld actually ships.
  *
  *     node tools/check-kernel.mjs
  *
- * The kernel is going to move to its own repository under Apache-2.0, and
- * the only thing making that possible is that it does not touch the DOM, the
- * GL context, storage, or the application's state. That property is invisible
- * -- nothing breaks the day someone reaches across it, and MetaMeld keeps
- * working right up until the moment the kernel is lifted out and does not.
+ * The assertions moved to SinterForm when the kernel did -- a kernel and the
+ * thing that proves it correct should not live in different repositories.
+ * What is left here is the half that is MetaMeld's business: that the build
+ * produced a sound sdf-editor.html, not merely that the submodule's source
+ * was fine before it was spliced in.
  *
- * So it is checked. This extracts the kernel block from the single-file app,
- * refuses it if it names anything browser-shaped, runs it under node with no
- * DOM at all, and asks it for some geometry whose answer is known.
+ * That distinction is the whole point of running it against the built file.
+ * The failure this guards -- a literal closing script tag anywhere in the
+ * kernel, even inside a comment -- ends the script element and turns
+ * everything after it into text, and the page is blank. It is a property of
+ * the assembled HTML, so it is checked on the assembled HTML.
  *
  * Exit code is 0 or 1, so it can be a CI step.
  */
-import { readFileSync } from 'fs';
+import { spawnSync } from 'child_process';
+import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const APP = join(HERE, 'sdf-editor.html');
-const OPEN = '<script id="sinterform">';
+const CHECKER = join(HERE, 'sinterform', 'check-kernel.mjs');
+const BUILT = join(HERE, 'sdf-editor.html');
 
-// Things the kernel may not name. `document` and `window` are the obvious
-// ones; `gl.` and `localStorage` are the ones that crept in last time.
-const FORBIDDEN = [
-  /\bdocument\s*\./, /\bwindow\s*\./, /\blocalStorage\b/, /\bgetElementById\b/,
-  /\baddEventListener\b/, /\bgl\s*\./, /\brequestAnimationFrame\b/,
-  /\bnavigator\s*\./, /\bfetch\s*\(/, /\balert\s*\(/, /\bprompt\s*\(/
-];
-
-let fail = 0;
-const ok = (cond, msg) => {
-  console.log(`  ${cond ? 'ok  ' : 'FAIL'}  ${msg}`);
-  if (!cond) fail++;
-};
-
-const src = readFileSync(APP, 'utf8');
-const a = src.indexOf(OPEN);
-if (a < 0) { console.error(`no ${OPEN} in ${APP}`); process.exit(1); }
-const b = src.indexOf('</' + 'script>', a);
-const kernel = src.slice(src.indexOf('\n', a) + 1, b);
-
-console.log(`SinterForm kernel — ${kernel.split('\n').length} lines of ${APP}\n`);
-
-// ---- 1. the seam holds ------------------------------------------------
-// Comments are stripped first: the header talks *about* the DOM, and a
-// checker that cannot tell prose from code is a checker nobody keeps.
-const code = kernel.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-for (const re of FORBIDDEN) {
-  const hit = code.match(re);
-  ok(!hit, `kernel does not use ${re.source.replace(/\\b|\\s\*/g, '')}`
-      + (hit ? ` — found ${JSON.stringify(hit[0])}` : ''));
-}
-// It also has to be one script element. A stray closing tag inside a comment
-// ends the element early and takes the whole page down with it.
-ok(!kernel.includes('</' + 'script>'), 'kernel contains no closing script tag');
-
-// ---- 2. it runs with no browser at all --------------------------------
-const mod = { exports: {} };
-try {
-  new Function('module', kernel)(mod);
-} catch (e) {
-  console.log(`  FAIL  kernel throws under node: ${e.message}`);
+if (!existsSync(CHECKER)) {
+  console.error('The SinterForm submodule is not checked out.\n'
+    + '  git submodule update --init tools/sinterform');
   process.exit(1);
 }
-const SF = mod.exports;
-ok(typeof SF === 'object' && SF.PRIMS, 'kernel exports a namespace via module.exports');
+if (!existsSync(BUILT)) {
+  console.error('tools/sdf-editor.html has not been built.\n'
+    + '  node tools/build-editor.mjs');
+  process.exit(1);
+}
 
-// ---- 3. it computes the geometry it is supposed to --------------------
-const node = (over) => Object.assign(
-  { t: 'sphere', on: true, op: 'add', k: 0, b: 0, tg: null, fi: 0,
-    p: [0, 0, 0], r: [0, 0, 0], d: [10, 0, 0], round: 0,
-    mx: false, my: false, mz: false }, over);
-
-const near = (got, want, tol, what) =>
-  ok(Math.abs(got - want) < tol, `${what}: ${got.toFixed(4)} ≈ ${want}`);
-
-const sphere = [{ id: 0, nodes: [node({})] }];
-near(SF.sceneSDF(sphere, 0, 0, 0), -10, 1e-6, 'centre of a r=10 sphere is -10');
-near(SF.sceneSDF(sphere, 10, 0, 0), 0, 1e-6, 'its surface is 0');
-near(SF.sceneSDF(sphere, 25, 0, 0), 15, 1e-6, '15 mm outside is 15');
-
-// a hard cut has to remove material; a blended one has to round the seam
-const cut = [{ id: 0, nodes: [node({}), node({ op: 'cut', p: [10, 0, 0], d: [6, 0, 0] })] }];
-ok(SF.sceneSDF(cut, 9, 0, 0) > 0, 'a cut sphere is empty where the cutter was');
-ok(SF.sceneSDF(cut, -9, 0, 0) < 0, 'and still solid on the far side');
-
-// two bodies meet in a plain min and never blend into each other
-const two = [{ id: 0, nodes: [node({})] },
-             { id: 1, nodes: [node({ b: 1, p: [40, 0, 0] })] }];
-near(SF.sceneSDF(two, 20, 0, 0), 10, 1e-6, 'the gap between two bodies is unblended');
-
-// the mesher and the exporter still produce something of the right shape
-// {lo, hi} in mm, not {x0, x1} -- checked because I guessed wrong once
-const B = SF.sceneBounds([node({})]);
-ok(B && B.lo && B.hi, 'sceneBounds returns a {lo, hi} box');
-near(B.lo[0], -10, 1e-6, 'the box of a r=10 sphere starts at -10');
-near(B.hi[2], 10, 1e-6, 'and ends at +10');
-ok(SF.sceneBounds([node({ op: 'cut' })]) === null,
-   'a scene with nothing added has no bounds');
-ok(SF.PRIM_KEYS.length >= 8, `${SF.PRIM_KEYS.length} primitives registered`);
-ok(typeof SF.surfaceNets === 'function' && typeof SF.meshToSTL === 'function',
-   'mesher and STL writer are exported');
-
-console.log(`\n${fail ? `${fail} FAILURE(S)` : 'all good'}`);
-process.exit(fail ? 1 : 0);
+const r = spawnSync(process.execPath, [CHECKER, BUILT], { stdio: 'inherit' });
+process.exit(r.status === null ? 1 : r.status);
