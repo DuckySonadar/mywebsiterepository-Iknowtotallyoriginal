@@ -27,6 +27,8 @@
 <style>
   :root { --bg:#101418; --panel:#1a2027f2; --ink:#dfe7ee; --dim:#8fa0af;
           --acc:#f0913b; --err:#ff6b6b; --note:#ffc857; --sel:#5ec8f0;
+          /* the three axes, shared by the viewport widget and the panel */
+          --ax:#ff5a6e; --ay:#5fd38d; --az:#7d92ff;
           --line:#3a4652; --btn:#2a333d;
           --sheet:52vh; }
   * { box-sizing:border-box; margin:0; -webkit-tap-highlight-color:transparent; }
@@ -123,16 +125,44 @@
   .node .ic { width:26px; height:26px; border:0; background:none; color:var(--dim);
               font-size:15px; cursor:pointer; padding:0; }
   .row { margin:9px 0; }
-  .row label { display:flex; justify-content:space-between; align-items:baseline;
+  .row label { display:flex; align-items:center; gap:7px;
                color:var(--dim); font-size:12px; margin-bottom:3px; }
-  .row label b { color:var(--ink); font-weight:600;
+  /* The icon says which handle in the viewport this row drives. Axis rows are
+     drawn in the axis colour, so a red arrow on screen and a red icon in the
+     panel are the same thing without either having to say so. */
+  .row label .gl { width:15px; height:15px; flex:0 0 auto; display:block; }
+  .row label b { color:var(--ink); font-weight:600; margin-left:auto;
                  font-variant-numeric:tabular-nums; }
+  /* the value is a button: tap it and type the number you actually want,
+     which a slider with a 0.5 mm step cannot give you */
+  .row label b.tap { cursor:pointer; padding:1px 5px; margin-right:-5px;
+                     border-radius:5px; border:1px dashed transparent; }
+  .row label b.tap:hover { border-color:var(--line); }
+  .row label b.tap:active { color:var(--acc); border-color:var(--acc); }
+  .numin { width:92px; margin-left:auto; background:#10141a; color:var(--ink);
+           border:1px solid var(--acc); border-radius:6px; padding:2px 6px;
+           font:600 12px/1.35 inherit; font-variant-numeric:tabular-nums;
+           text-align:right; -webkit-user-select:text; user-select:text; }
   .slide { display:flex; align-items:center; gap:8px; }
   .slide input[type=range] { flex:1 1 auto; accent-color:var(--acc);
                              height:30px; }
   .step { width:32px; height:32px; flex:0 0 auto; border:1px solid var(--line);
           border-radius:8px; background:var(--btn); color:var(--ink);
           font-size:16px; line-height:1; cursor:pointer; padding:0; }
+  /* The widget's own mode switch. Docked to the edge rather than floating by
+     the selection: a bar that follows the model covers the model, and on a
+     phone it ends up under the thumb that is trying to drag a handle. */
+  #gizbar { position:fixed; left:10px; top:50%; transform:translateY(-50%);
+            display:none; flex-direction:column; gap:7px; z-index:6; }
+  #gizbar.on { display:flex; }
+  #gizbar button { width:44px; height:44px; padding:0; cursor:pointer;
+                   border:1px solid var(--line); border-radius:12px;
+                   background:#1a2027e6; color:var(--dim);
+                   display:flex; align-items:center; justify-content:center;
+                   -webkit-backdrop-filter:blur(6px); backdrop-filter:blur(6px); }
+  #gizbar button.on { border-color:var(--acc); color:var(--acc);
+                      background:#2b2519f2; }
+  #gizbar svg { width:22px; height:22px; display:block; }
   .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; }
   .toggles { display:flex; gap:6px; flex-wrap:wrap; }
   select { width:100%; background:#10141a; color:var(--ink); font-family:inherit;
@@ -189,6 +219,31 @@
 <div id="errbar"></div>
 <div id="hint"></div>
 
+<!-- The move / rotate / scale widget's mode switch. Hidden until something is
+     selected, because the widget it drives is drawn at the selection. -->
+<div id="gizbar">
+  <button data-giz="move" class="on" title="Move along an axis" aria-label="Move">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+         stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3v18M3 12h18"/><path d="M12 3 9.5 5.8M12 3l2.5 2.8"/>
+      <path d="M12 21l-2.5-2.8M12 21l2.5-2.8"/>
+      <path d="M3 12l2.8-2.5M3 12l2.8 2.5"/><path d="M21 12l-2.8-2.5M21 12l-2.8 2.5"/>
+    </svg>
+  </button>
+  <button data-giz="rotate" title="Turn about an axis" aria-label="Rotate">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+         stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 12a8 8 0 1 1-3.2-6.4"/><path d="M20.5 4v4.6h-4.6"/>
+    </svg>
+  </button>
+  <button data-giz="scale" title="Scale about the centre" aria-label="Scale">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+         stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 20 20 4"/><path d="M14 4h6v6"/><path d="M10 20H4v-6"/>
+    </svg>
+  </button>
+</div>
+
 <div id="panel">
   <div id="grip"><div></div></div>
   <div id="sheetBody">
@@ -230,7 +285,9 @@
       <button class="btn" id="startBtn">Starters</button>
     </div>
     <div class="row" id="resRow">
-      <label>STL resolution <b id="resVal">0.5 mm</b></label>
+      <label><span>STL resolution</span><b id="resVal" class="tap" role="button"
+             tabindex="0" title="Tap to type a value">0.5 mm</b>
+        <input class="numin" id="resNum" type="text" inputmode="decimal" hidden></label>
       <div class="slide">
         <button class="step" data-step="res:-1">−</button>
         <input type="range" id="resInp" min="0.2" max="2" step="0.05" value="0.5">
@@ -4200,6 +4257,299 @@ function selectionOutlines() {
   return out;
 }
 
+// ======================================================================
+// tapping a shape, and the widget that appears when you do
+// ======================================================================
+// Until now the only way to select something was the list. That is fine for a
+// model you can see all of and wrong for one you are looking at: the shape
+// under your finger is the one you mean, and the list should follow rather
+// than lead. So a tap in the viewport is a pick.
+//
+// The pick is a ray marched against the same field the shader draws, in the
+// kernel's JavaScript rather than on the GPU. One tap is a few hundred
+// evaluations, which is nothing, and it needs no render target, no readback
+// and no second copy of the scene in a picking shader that could disagree
+// with the one on screen.
+
+// The ray through a CSS pixel. This has to agree with the fragment shader's
+// own construction or the tap lands somewhere other than where you touched:
+// uv spans +/-0.5 vertically, the focal length carries that 0.5, and the
+// screen's y runs the opposite way to clip space's.
+function rayAt(px, py) {
+  const { eye, r, u, f } = camBasis();
+  const w = canvas.clientWidth || innerWidth, h = canvas.clientHeight || innerHeight;
+  const ux = (px - w / 2) / h, uy = -(py - h / 2) / h;
+  const fl = 0.5 / TAN_HALF_FOV;
+  const d = [r[0] * ux + u[0] * uy + f[0] * fl,
+             r[1] * ux + u[1] * uy + f[1] * fl,
+             r[2] * ux + u[2] * uy + f[2] * fl];
+  const l = Math.hypot(d[0], d[1], d[2]) || 1;
+  return { o: eye, d: [d[0] / l, d[1] / l, d[2] / l] };
+}
+
+// Which shape owns the surface at a point: the `add` whose own field is
+// nearest it. Where two shapes blend there is no single answer — the surface
+// there belongs to both — and the nearer one is what anybody pointing at it
+// means. Cuts are not candidates: you cannot tap a hole.
+function ownerAt(p, plan) {
+  const q = [0, 0, 0], e = [0, 0, 0], seen = new Set();
+  let best = null, bd = 1e9;
+  for (const part of plan) for (const n of part.nodes) {
+    if (n.op !== 'add' || seen.has(n)) continue;
+    seen.add(n);
+    e[0] = n.r[0] * RAD; e[1] = n.r[1] * RAD; e[2] = n.r[2] * RAD;
+    invRot((n.mx ? Math.abs(p[0]) : p[0]) - n.p[0],
+           (n.my ? Math.abs(p[1]) : p[1]) - n.p[1],
+           (n.mz ? Math.abs(p[2]) : p[2]) - n.p[2], e, q);
+    const di = Math.abs(PRIMS[n.t].js(q, n.d, roundSlot(n), n));
+    if (di < bd) { bd = di; best = n; }
+  }
+  return best;
+}
+
+function pickAt(px, py) {
+  const plan = buildPlan(nodes);
+  if (!plan.length) return null;
+  const { o, d } = rayAt(px, py);
+  let t = 1;
+  for (let i = 0; i < 220; i++) {
+    const x = o[0] + d[0] * t, y = o[1] + d[1] * t, z = o[2] + d[2] * t;
+    const dist = sceneSDF(plan, x, y, z);
+    if (dist < 0.06) return ownerAt([x, y, z], plan);
+    // the same 0.72 the shader steps by: neither smin nor the ellipsoid is a
+    // true distance, and a full step tunnels through a thin blended shoulder
+    t += Math.max(dist * 0.72, 0.05);
+    if (t > 4000) break;
+  }
+  return null;
+}
+
+// ---------- the widget ----------
+// Three handles at the selection's pivot — the *same* pivot selCentre() gives
+// the Place sliders, so the two controls cannot disagree about what a turn is
+// about. Everything a handle does goes through translateSelection,
+// rotateSelection and scaleSelection: the widget is a new way to drive the
+// operations that were already there, not a second implementation of them.
+const AXV = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+// X red, Y green, Z blue, as every modelling tool has for forty years -- but
+// Z pushed towards violet, because a selected shape is drawn in cyan and the
+// handle for its up axis was disappearing into it.
+const AXCOL = [[1.00, 0.35, 0.43], [0.37, 0.83, 0.55], [0.49, 0.57, 1.00]];
+let gizMode = 'move';            // move | rotate | scale
+let gizDrag = null;              // the handle being dragged, if any
+let gizHot = -1;                 // the handle under the pointer
+
+// Constant on screen rather than in the model: a widget that scaled with the
+// shape would be untappable on a small part and swamp the view on a large one.
+function gizSize() {
+  const C = selCentre(), eye = camBasis().eye;
+  const dist = Math.hypot(C[0] - eye[0], C[1] - eye[1], C[2] - eye[2]);
+  return Math.max(dist * TAN_HALF_FOV * 0.26, 1);
+}
+
+// What a handle can be grabbed by. Sampled along the thing you can see, so
+// what is hittable is what is drawn — a ring you can only catch at four points
+// feels broken, and an arrow with a hitbox wider than itself feels haunted.
+function gizPoints(a, C, L) {
+  const out = [];
+  if (gizMode === 'rotate') {
+    const U = AXV[(a + 1) % 3], V = AXV[(a + 2) % 3];
+    for (let i = 0; i < 48; i++) {
+      const th = i / 48 * 2 * Math.PI, c = Math.cos(th), s = Math.sin(th);
+      out.push([C[0] + (U[0] * c + V[0] * s) * L,
+                C[1] + (U[1] * c + V[1] * s) * L,
+                C[2] + (U[2] * c + V[2] * s) * L]);
+    }
+    return out;
+  }
+  const A = AXV[a];
+  for (let i = 3; i <= 10; i++) {
+    const f = i / 10;
+    out.push([C[0] + A[0] * L * f, C[1] + A[1] * L * f, C[2] + A[2] * L * f]);
+  }
+  return out;
+}
+
+// What it looks like. An arrow for move, a ring for turn, a cube for scale —
+// the handle says which of the three it is without reading the toolbar.
+function gizLines(a, C, L) {
+  const A = AXV[a], U = AXV[(a + 1) % 3], V = AXV[(a + 2) % 3], out = [];
+  const at = (t, u, v) => [C[0] + A[0] * t + U[0] * u + V[0] * v,
+                           C[1] + A[1] * t + U[1] * u + V[1] * v,
+                           C[2] + A[2] * t + U[2] * u + V[2] * v];
+  const seg = (p, q) => out.push(p[0], p[1], p[2], q[0], q[1], q[2]);
+  if (gizMode === 'rotate') {
+    const N = 48;
+    for (let i = 0; i < N; i++) {
+      const t0 = i / N * 2 * Math.PI, t1 = (i + 1) / N * 2 * Math.PI;
+      seg(at(0, Math.cos(t0) * L, Math.sin(t0) * L),
+          at(0, Math.cos(t1) * L, Math.sin(t1) * L));
+    }
+    return new Float32Array(out);
+  }
+  seg(at(L * 0.16, 0, 0), at(L * 0.78, 0, 0));
+  const r = L * 0.105;
+  if (gizMode === 'move') {
+    const tip = at(L, 0, 0);
+    for (let i = 0; i < 6; i++) {
+      const th = i / 6 * 2 * Math.PI, th2 = (i + 1) / 6 * 2 * Math.PI;
+      const b0 = at(L * 0.78, Math.cos(th) * r, Math.sin(th) * r);
+      seg(tip, b0);
+      seg(b0, at(L * 0.78, Math.cos(th2) * r, Math.sin(th2) * r));
+    }
+  } else {
+    const o = L * 0.88, C8 = [];
+    for (let i = 0; i < 8; i++)
+      C8.push(at(o + (i & 4 ? r : -r), (i & 1 ? r : -r), (i & 2 ? r : -r)));
+    for (const [x, y] of [[0,1],[1,3],[3,2],[2,0],[4,5],[5,7],[7,6],[6,4],
+                          [0,4],[1,5],[2,6],[3,7]]) seg(C8[x], C8[y]);
+  }
+  return new Float32Array(out);
+}
+
+// world point -> CSS pixel, through the same matrix the overlay draws with
+function projectPt(P, M, w, h) {
+  const cw = M[3] * P[0] + M[7] * P[1] + M[11] * P[2] + M[15];
+  if (cw <= 1e-6) return null;
+  const x = (M[0] * P[0] + M[4] * P[1] + M[8] * P[2] + M[12]) / cw;
+  const y = (M[1] * P[0] + M[5] * P[1] + M[9] * P[2] + M[13]) / cw;
+  return [(x * 0.5 + 0.5) * w, (1 - (y * 0.5 + 0.5)) * h];
+}
+
+function gizPick(px, py) {
+  if (!picked.size) return -1;
+  const w = canvas.clientWidth || innerWidth, h = canvas.clientHeight || innerHeight;
+  const M = mvpMatrix(w / h), C = selCentre(), L = gizSize();
+  let best = -1, bd = 26;                       // a fingertip, in pixels
+  for (let a = 0; a < 3; a++)
+    for (const P of gizPoints(a, C, L)) {
+      const sp = projectPt(P, M, w, h);
+      if (!sp) continue;
+      const dd = Math.hypot(sp[0] - px, sp[1] - py);
+      if (dd < bd) { bd = dd; best = a; }
+    }
+  return best;
+}
+
+// Where the pointer is along a handle's axis, in millimetres from the pivot:
+// the point on the axis line closest to the ray through the pointer.
+function axisParam(px, py, C, A) {
+  const { o, d } = rayAt(px, py);
+  const b = A[0] * d[0] + A[1] * d[1] + A[2] * d[2];
+  const den = 1 - b * b;
+  if (Math.abs(den) < 1e-4) return null;        // sighting straight down it
+  const wx = C[0] - o[0], wy = C[1] - o[1], wz = C[2] - o[2];
+  const c = A[0] * wx + A[1] * wy + A[2] * wz;
+  const f = d[0] * wx + d[1] * wy + d[2] * wz;
+  return (b * f - c) / den;
+}
+
+// The angle of the pointer around an axis, measured in the plane the ring is
+// drawn in rather than on the screen — so a ring seen almost edge-on still
+// turns by the amount the finger travelled along it, not by what it looks
+// like it travelled.
+function ringAngle(px, py, C, a) {
+  const A = AXV[a], U = AXV[(a + 1) % 3], V = AXV[(a + 2) % 3];
+  const { o, d } = rayAt(px, py);
+  const den = d[0] * A[0] + d[1] * A[1] + d[2] * A[2];
+  if (Math.abs(den) < 1e-4) return null;        // ring edge-on: no answer
+  const s = ((C[0] - o[0]) * A[0] + (C[1] - o[1]) * A[1] + (C[2] - o[2]) * A[2]) / den;
+  if (!(s > 0)) return null;
+  const P = [o[0] + d[0] * s - C[0], o[1] + d[1] * s - C[1], o[2] + d[2] * s - C[2]];
+  return Math.atan2(P[0] * V[0] + P[1] * V[1] + P[2] * V[2],
+                    P[0] * U[0] + P[1] * U[1] + P[2] * U[2]);
+}
+
+// The pivot is frozen for the length of the drag. It has to be: the selection
+// moves under the handle, and recomputing the centre each event would measure
+// every delta against the position the previous delta just produced, which
+// comes out as no movement at all.
+function gizStart(a, px, py) {
+  const C = selCentre().slice();
+  if (gizMode === 'rotate') {
+    const ang = ringAngle(px, py, C, a);
+    if (ang === null) return false;
+    gizDrag = { a, mode: 'rotate', C, last: ang };
+  } else {
+    const t = axisParam(px, py, C, AXV[a]);
+    if (t === null) return false;
+    if (gizMode === 'scale' && Math.abs(t) < 1e-3) return false;
+    gizDrag = { a, mode: gizMode, C, last: t };
+  }
+  snapshot();
+  return true;
+}
+
+function gizMove(px, py) {
+  if (!gizDrag) return;
+  const { a, C } = gizDrag, A = AXV[a];
+  if (gizDrag.mode === 'rotate') {
+    const ang = ringAngle(px, py, C, a);
+    if (ang === null) return;
+    let dth = ang - gizDrag.last;
+    // the short way round, so crossing the seam is not most of a turn
+    while (dth > Math.PI) dth -= 2 * Math.PI;
+    while (dth < -Math.PI) dth += 2 * Math.PI;
+    gizDrag.last = ang;
+    rotateSelection(a, dth * 180 / Math.PI);
+  } else if (gizDrag.mode === 'move') {
+    const t = axisParam(px, py, C, A);
+    if (t === null) return;
+    const dt = t - gizDrag.last;
+    gizDrag.last = t;
+    translateSelection(A[0] * dt, A[1] * dt, A[2] * dt);
+  } else {
+    const t = axisParam(px, py, C, A);
+    if (t === null || Math.abs(gizDrag.last) < 1e-4) return;
+    // Uniform, exactly like the Scale slider. Per-axis scaling of a rotated
+    // assembly is not expressible in this representation — a box turned 30
+    // degrees and squashed in x is no longer a box — so it is not offered
+    // here either, however much three separate handles look like it is.
+    const f = t / gizDrag.last;
+    if (!(f > 0)) return;                       // dragged through the pivot
+    gizDrag.last = t;
+    scaleSelection(Math.min(Math.max(f, 0.5), 2));
+  }
+  refreshInspectorValues();
+  save(); scheduleInfo(); markInteracting(false);
+}
+
+function drawGizmo(w, h) {
+  if (!picked.size) return;
+  const C = selCentre(), L = gizSize();
+  gl.disable(gl.DEPTH_TEST);
+  gl.useProgram(lineProg);
+  gl.bindVertexArray(lineVAO);
+  gl.bindBuffer(gl.ARRAY_BUFFER, lineBuf);
+  gl.uniformMatrix4fv(gl.getUniformLocation(lineProg, 'uMVP'), false,
+                      mvpMatrix(w / h));
+  const uC = gl.getUniformLocation(lineProg, 'uC');
+  for (let a = 0; a < 3; a++) {
+    const data = gizLines(a, C, L);
+    const hot = gizDrag ? gizDrag.a === a : gizHot === a;
+    const c = AXCOL[a];
+    gl.uniform3f(uC, hot ? Math.min(c[0] * 1.3 + 0.3, 1) : c[0],
+                     hot ? Math.min(c[1] * 1.3 + 0.3, 1) : c[1],
+                     hot ? Math.min(c[2] * 1.3 + 0.3, 1) : c[2]);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+    gl.drawArrays(gl.LINES, 0, data.length / 3);
+  }
+  gl.bindVertexArray(null);
+}
+
+// The widget's mode switch shows only while it has something to act on.
+function syncGizbar() {
+  const bar = document.getElementById('gizbar');
+  bar.classList.toggle('on', picked.size > 0);
+  for (const b of bar.children) b.classList.toggle('on', b.dataset.giz === gizMode);
+}
+document.getElementById('gizbar').onclick = e => {
+  const b = e.target.closest('button[data-giz]');
+  if (!b) return;
+  gizMode = b.dataset.giz;
+  syncGizbar(); needDraw();
+};
+
 // The build plate, drawn as lines because the meshed view has no shader to
 // draw it in. The marcher keeps its own, which fades with distance and takes
 // the model's shadow — neither of which this can do.
@@ -4300,6 +4650,7 @@ function draw() {
 
   if (meshed) drawMeshed(w, h); else drawMarched(w, h);
   drawOverlay(w, h, meshed);
+  drawGizmo(w, h);
 }
 
 function drawMarched(w, h) {
@@ -4390,14 +4741,42 @@ function moveSelected(dx, dy, dz) {
   refreshInspectorValues();
   save(); scheduleInfo();
 }
+// A tap is a press that went nowhere. Tracked rather than assumed, because
+// the same finger that selects also orbits, and telling them apart after the
+// fact is the only way to have both on one gesture.
+let tapFrom = null, tapMoved = 0, tapAt = 0, grabbed = false;
+
 canvas.addEventListener('pointerdown', e => {
   canvas.setPointerCapture(e.pointerId);
   pts.set(e.pointerId, [e.clientX, e.clientY]);
-  if (pts.size === 1) { last1 = [e.clientX, e.clientY]; if (mode === 'grab') snapshot(); }
-  else { last1 = null; lastPinch = 0; lastMid = null; }
+  if (pts.size === 1) {
+    last1 = [e.clientX, e.clientY];
+    tapFrom = [e.clientX, e.clientY]; tapMoved = 0; tapAt = Date.now();
+    grabbed = false;
+    // a widget handle takes the drag ahead of the camera and ahead of Move
+    const a = gizPick(e.clientX, e.clientY);
+    if (a >= 0 && gizStart(a, e.clientX, e.clientY)) gizHot = a;
+  } else {
+    last1 = null; lastPinch = 0; lastMid = null;
+    // a second finger is a camera gesture; whatever the first was doing stops
+    gizDrag = null; tapFrom = null;
+  }
 });
 canvas.addEventListener('pointermove', e => {
-  if (!pts.has(e.pointerId)) return;
+  if (!pts.has(e.pointerId)) {
+    // nothing pressed: light up the handle under the cursor, which is the
+    // only hint a mouse gets that these things are grabbable
+    if (picked.size && !gizDrag) {
+      const a = gizPick(e.clientX, e.clientY);
+      if (a !== gizHot) { gizHot = a; needDraw(); }
+    }
+    return;
+  }
+  if (tapFrom) {
+    tapMoved += Math.hypot(e.clientX - tapFrom[0], e.clientY - tapFrom[1]);
+    tapFrom = [e.clientX, e.clientY];
+  }
+  if (gizDrag) { gizMove(e.clientX, e.clientY); return; }
   pts.set(e.pointerId, [e.clientX, e.clientY]);
   const P = [...pts.values()];
   // Move mode drags the shape, not the view — so the frame it asks for is not
@@ -4409,6 +4788,9 @@ canvas.addEventListener('pointermove', e => {
     if (mode === 'grab') {
       const { r, u, s } = screenAxes();
       camera = false;
+      // one undo step per drag, and none at all for a drag that never was —
+      // in Move mode a tap now selects, and a tap must not cost an undo
+      if (!grabbed) { snapshot(); grabbed = true; }
       moveSelected((r[0] * dx - u[0] * dy) * s, (r[1] * dx - u[1] * dy) * s,
                    (r[2] * dx - u[2] * dy) * s);
     } else {
@@ -4425,6 +4807,7 @@ canvas.addEventListener('pointermove', e => {
       if (mode === 'grab' && picked.size) {
         // two fingers in Move mode raise/lower along the build direction
         camera = false;
+        if (!grabbed) { snapshot(); grabbed = true; }
         moveSelected(0, 0, -dy * s);
       } else {
         cam.tgt[0] -= (r[0] * dx - u[0] * dy) * s;
@@ -4437,11 +4820,35 @@ canvas.addEventListener('pointermove', e => {
   markInteracting(camera);
 });
 function endPtr(e) {
+  const wasGiz = !!gizDrag;
+  gizDrag = null;
   pts.delete(e.pointerId);
   const P = [...pts.values()];
   last1 = P.length === 1 ? P[0] : null;
   if (P.length < 2) { lastPinch = 0; lastMid = null; }
+  // A press that stayed put and did not drive a handle is a tap, and a tap
+  // picks. The thresholds are a finger's worth of wobble and rather less than
+  // a long press, so an orbit that happens to end where it started is not
+  // mistaken for one.
+  if (!wasGiz && !P.length && tapFrom && tapMoved < 8 && Date.now() - tapAt < 700)
+    tapPick(e.clientX, e.clientY);
+  tapFrom = null;
   markInteracting(true);
+}
+
+// Tapping nothing clears the selection, which is also how the widget is put
+// away. In Sticky mode it does not, because there the whole point is that the
+// selection survives what you tap next.
+function tapPick(px, py) {
+  const n = pickAt(px, py);
+  if (n) pickShape(n);
+  else if (selMode !== 'sticky') picked = new Set();
+  else return;
+  renderList(); renderInspector(); save(); needDraw();
+  // bring the row into view: on a long list the shape you just tapped is
+  // otherwise marked somewhere you cannot see
+  const row = document.querySelector('#nodes .node.sel, #nodes .node.pick');
+  if (row) row.scrollIntoView({ block: 'nearest' });
 }
 canvas.addEventListener('pointerup', endPtr);
 canvas.addEventListener('pointercancel', endPtr);
@@ -4699,7 +5106,102 @@ function renderList() {
     : 'Nothing selected · tap a shape, or a body above';
   renderBodies();
   renderBaked();
+  syncGizbar();
   scheduleInfo();
+}
+
+// ---------- one slider row ----------
+// ---------- the icons ----------
+// One glyph per row, saying what the row moves. The axis ones are drawn in
+// the axis colour, which is the same colour that axis has in the viewport
+// widget -- so the red arrow on screen and the red icon in the panel do not
+// have to explain that they are the same thing.
+const GLYPH = {
+  posX:  '<path d="M2.5 8h9"/><path d="M9 5.2 11.5 8 9 10.8"/>',
+  posY:  '<path d="M3.5 12.5 12 4"/><path d="M12 8V4H8"/>',
+  posZ:  '<path d="M8 13.5v-9"/><path d="M5.2 7 8 4.5l2.8 2.5"/>',
+  rotX:  '<path d="M13 8a5 5 0 1 1-2.2-4.1"/><path d="M13.2 2.9v3.3H9.9"/>',
+  rotY:  '<path d="M13 8a5 5 0 1 1-2.2-4.1"/><path d="M13.2 2.9v3.3H9.9"/>',
+  rotZ:  '<path d="M13 8a5 5 0 1 1-2.2-4.1"/><path d="M13.2 2.9v3.3H9.9"/>',
+  scale: '<path d="M3 13 13 3"/><path d="M3 9.5V13h3.5"/><path d="M13 6.5V3H9.5"/>',
+  blend: '<circle cx="6" cy="8" r="3.4"/><circle cx="10" cy="8" r="3.4"/>',
+  radius:'<circle cx="8" cy="8" r="5.2"/><path d="M8 8h5.2"/>',
+  round: '<path d="M2.5 13.5V7A4.5 4.5 0 0 1 7 2.5h6.5"/>',
+  sides: '<path d="M8 2.2 13 5v6l-5 2.8L3 11V5z"/>',
+  angle: '<path d="M2.5 13h11"/><path d="M2.5 13 11 4.5"/>'
+         + '<path d="M8.6 13a6.1 6.1 0 0 0-1.8-4.3"/>',
+  sizeX: '<path d="M2 8h12"/><path d="M4.4 5.6 2 8l2.4 2.4"/>'
+         + '<path d="M11.6 5.6 14 8l-2.4 2.4"/>',
+  sizeY: '<path d="M3 13 13 3"/><path d="M3 9.6V13h3.4"/><path d="M13 6.4V3H9.6"/>',
+  sizeZ: '<path d="M8 2v12"/><path d="M5.6 4.4 8 2l2.4 2.4"/>'
+         + '<path d="M5.6 11.6 8 14l2.4-2.4"/>',
+  span:  '<path d="M3 5v6"/><path d="M13 5v6"/><path d="M3 8h10"/>',
+  res:   '<path d="M2.5 2.5h11v11h-11z"/><path d="M2.5 6.2h11M2.5 9.8h11"/>'
+         + '<path d="M6.2 2.5v11M9.8 2.5v11"/>'
+};
+// A dim's label is the kernel's, so the mapping lives here rather than a
+// per-primitive icon field the kernel would have to carry for one consumer.
+const GLYPH_FOR = [
+  [/^Position X$/, 'posX', 'ax'], [/^Position Y$/, 'posY', 'ay'],
+  [/^Position Z$/, 'posZ', 'az'],
+  [/^Rotate X$/, 'rotX', 'ax'], [/^Rotate Y$/, 'rotY', 'ay'],
+  [/^Rotate Z$/, 'rotZ', 'az'],
+  [/^Scale$/, 'scale'], [/^Blend$/, 'blend'], [/^Corner round$/, 'round'],
+  [/radius$/i, 'radius'], [/^Sides$/, 'sides'], [/^Sweep$/, 'angle'],
+  [/^(Size X|Base|Half width)$/, 'sizeX'],
+  [/^(Size Y|Half depth)$/, 'sizeY'],
+  // a capsule's Length and a link's are along its own Z, like every Height
+  [/^(Size Z|Height|Cut height|Length|Half height)$/, 'sizeZ'],
+  [/^Size$/, 'span']
+];
+function glyph(name, axis) {
+  const body = GLYPH[name] || GLYPH.span;
+  const col = axis ? ` style="color:var(--${axis})"` : '';
+  return `<svg class="gl" viewBox="0 0 16 16" fill="none" stroke="currentColor"`
+       + ` stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"`
+       + `${col} aria-hidden="true">${body}</svg>`;
+}
+function iconFor(label) {
+  for (const [re, name, axis] of GLYPH_FOR)
+    if (re.test(label)) return glyph(name, axis);
+  return glyph('span');
+}
+
+// ---------- typing a value instead of sliding to it ----------
+// A slider is the right control for finding a size and the wrong one for
+// entering a known one: 0.5 mm steps cannot reach 12.7, and on a phone the
+// last millimetre is a fight. So the readout is also a button -- tap it, type
+// the number, Enter. Escape leaves it alone.
+//
+// `commit` is the row's own setter, so a typed value goes through exactly the
+// path a dragged one does: the same clamp, the same undo snapshot, the same
+// redraw. Shared by the inspector rows and the STL resolution row.
+function editableValue(out, num, get, commit, after) {
+  const open = () => {
+    num.value = String(+(+get()).toFixed(4));
+    out.hidden = true; num.hidden = false;
+    num.focus(); num.select();
+  };
+  const close = (apply) => {
+    if (num.hidden) return;
+    if (apply) {
+      // a comma is what half the world's keyboards put on that key
+      const v = parseFloat(String(num.value).replace(',', '.'));
+      if (isFinite(v)) commit(v);
+    }
+    num.hidden = true; out.hidden = false;
+    if (after) after();
+  };
+  out.onclick = open;
+  out.onkeydown = e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+  };
+  num.onkeydown = e => {
+    if (e.key === 'Enter') { e.preventDefault(); close(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); close(false); }
+  };
+  num.onblur = () => close(true);
+  return { open, close };
 }
 
 // ---------- one slider row ----------
@@ -4707,11 +5209,15 @@ function sliderRow(label, unit, get, set, min, max, step) {
   const row = document.createElement('div');
   row.className = 'row';
   row.innerHTML =
-    `<label><span>${label}</span><b></b></label>` +
+    `<label>${iconFor(label)}<span>${label}</span>` +
+    `<b class="tap" role="button" tabindex="0" title="Tap to type a value"></b>` +
+    `<input class="numin" type="text" inputmode="decimal" hidden></label>` +
     `<div class="slide"><button class="step">−</button>` +
     `<input type="range" min="${min}" max="${max}" step="${step}">` +
     `<button class="step">＋</button></div>`;
-  const out = row.querySelector('b'), inp = row.querySelector('input');
+  const out = row.querySelector('b');
+  const num = row.querySelector('.numin');
+  const inp = row.querySelector('input[type=range]');
   const [minus, plus] = row.querySelectorAll('.step');
   const show = () => {
     const v = get();
@@ -4732,6 +5238,8 @@ function sliderRow(label, unit, get, set, min, max, step) {
     touched = false;
   };
   minus.onclick = bump(-1); plus.onclick = bump(1);
+  // typing a value is one edit, not a drag, so it closes its own undo step
+  editableValue(out, num, get, v => { commit(v); touched = false; }, show);
   row.refresh = show;
   show();
   return row;
@@ -5319,6 +5827,14 @@ $('resInp').oninput = () => {
   $('resVal').textContent = parseFloat($('resInp').value).toFixed(2) + ' mm';
   scheduleInfo();
 };
+// the same icon and the same tap-to-type as every row in the inspector
+$('resRow').querySelector('label').insertAdjacentHTML('afterbegin', glyph('res'));
+editableValue($('resVal'), $('resNum'),
+  () => parseFloat($('resInp').value),
+  v => {
+    $('resInp').value = Math.min(Math.max(v, 0.2), 2).toFixed(2);
+    $('resInp').oninput();
+  });
 document.body.addEventListener('click', e => {
   const s = e.target.dataset && e.target.dataset.step;
   if (s !== 'res:-1' && s !== 'res:1') return;

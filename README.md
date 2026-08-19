@@ -415,6 +415,47 @@ mode: one finger slides the selection across the screen plane, two fingers
 raise and lower it. ⤢ frames the model in whatever strip of screen the
 sheet leaves visible. Drag or tap the grip to resize the sheet.
 
+### The widget
+
+**Tap a shape in the viewport to select it**, in either mode. The shape list
+follows: the row lights up and scrolls into view, and the inspector switches
+to it — which is the right way round for a model you are looking at rather
+than reading. Tapping empty space clears the selection.
+
+The tap is a ray marched against the same field the shader draws, so what you
+get is the shape whose surface is under your finger. Where two shapes blend,
+the surface belongs to both and the nearer one wins. Cuts are not candidates:
+you cannot tap a hole.
+
+Selecting anything raises a **widget** at the selection, and a small bar of
+three buttons down the left edge says what its handles do:
+
+- **Move** — an arrow per axis. Drag one and the selection slides along that
+  axis only.
+- **Turn** — a ring per axis. Drag one and the selection rotates about that
+  axis, through the angle your finger travelled *along the ring*, not across
+  the screen — so a ring seen almost edge-on still turns by what you meant.
+- **Scale** — a cube per axis. Dragging any of them scales **uniformly**,
+  which is what the Scale slider does and for the same reason: per-axis
+  scaling of a rotated assembly is not expressible here, and three separate
+  handles must not imply otherwise.
+
+The handles are drawn in the axis colours — X red, Y green, Z violet — and
+those are the colours on the matching sliders in the panel, so the arrow on
+screen and the row in the sheet do not have to explain that they are the same
+thing. (Z is violet rather than blue because a selected shape is drawn in
+cyan, and a blue handle for its up axis disappeared into it.)
+
+The widget turns about the selection's own centre, which is the same centre
+the Place sliders use, so the two controls cannot disagree about what a turn
+is about. With several shapes selected it moves, turns and scales all of them
+as one rigid piece, and the whole drag is one undo step.
+
+Everything a handle does goes through the same three operations the sliders
+drive. The widget is a second way to reach them, not a second implementation
+of them — which is why a group turn stays rigid to floating-point precision
+whichever control you use.
+
 ### Selecting
 
 Selected shapes turn **blue** in the viewport, and because shapes blend
@@ -430,6 +471,10 @@ The button row above the shape list decides what a tap does:
   out. That is the whole deselect story; the selection can be emptied
   completely, and the inspector then says so rather than pretending
   something is selected.
+
+A tap in the viewport obeys the same two modes: in **Single** it replaces the
+selection, in **Sticky** it adds to it, and in Sticky a tap on empty space is
+left alone rather than clearing what you have gathered.
 
 To select a **body**, tap it in the Bodies list. That takes everything the
 body is made of — its own shapes *and* every cut or keep that reaches
@@ -498,6 +543,20 @@ of the same scene costs hundreds. The raymarched picture is back the moment
 the view settles. Dragging a *slider* never gets the mesh — the shape is
 changing under it, and a stand-in that lagged the hand would be worse than a
 slow picture that did not.
+
+### Reading and typing the numbers
+
+Every slider carries an **icon** saying what it drives, and the axis ones are
+drawn in the axis colour the widget uses — so the red arrow on screen and the
+red row in the sheet identify each other without a caption.
+
+**Tap the number** on any row and type the value you want. A slider is the
+right control for finding a size and the wrong one for entering a known one:
+the 0.5 mm step cannot reach 12.7, and on a phone the last millimetre is a
+fight. Enter commits, Escape leaves it alone, and a typed value is clamped to
+the same range the slider has. It goes through the row's own setter, so it
+takes exactly the path a dragged value does — same clamp, same undo step,
+same redraw. The STL resolution row works the same way.
 
 ### Getting it out
 
