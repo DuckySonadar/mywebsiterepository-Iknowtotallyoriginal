@@ -612,17 +612,17 @@ function halfwidthAt(x, z, S) {
 // overshoot is what lets it simply be scaled to the local section instead of
 // solved for it. Ported from joint_tool.py, which carries the derivation.
 const TOOL = {
-  PLATE: 8.0, ANCHOR: 8.5,      // its build plate, and the joint, in its frame
-  HW_REF: 20.5, H_REF: 38.75,   // the body section it was authored against
-  AHEAD: 11.0, BEHIND: 15.0,    // body it consumes each way, in its own units
-  // its own bounding box, not its footprint: the solid runs y = -2.5 .. 44
-  // about an anchor at 8.5, and z = 8 .. 49.75 off a plate at 8. This is the
-  // box the designer draws handles on, so it has to be the whole solid --
-  // shroud, overshoot and all -- rather than the part that removes material.
-  BOX_AHEAD: 11.0, BOX_BEHIND: 35.5, BOX_TALL: 41.75,
-  MIN_SPACING: 26.0,            // ...so joints no closer than the sum of those
-  SHATTER: 12.0,                // closer still and the two cuts collide
-  THICK: 1.20                   // its own clearance, at scale 1
+  PLATE: 0.0, ANCHOR: -10.2,    // its build plate, and the joint, in its frame
+  HW_REF: 10.0, H_REF: 20.0,    // the body section it is scaled against
+  AHEAD: 10.8, BEHIND: 7.5,     // body it consumes each way, in its own units
+  // its own bounding box, not its footprint: the solid runs x = -21.2 .. 5.6
+  // about an anchor at -10.2, and z = -7.6 .. 22 off a plate at 0 -- it hangs
+  // below the plate, which is what carries the cut through the flat belly.
+  // This is the box the designer draws handles on, so it is the whole solid.
+  BOX_AHEAD: 11.0, BOX_BEHIND: 15.8, BOX_TALL: 29.6, BOX_DROP: 7.6,
+  MIN_SPACING: 18.3,            // ...so joints no closer than the sum of those
+  SHATTER: 10.0,                // closer still and the two cuts collide
+  THICK: 0.90                   // its own clearance, at the reference section
 };
 
 // tool.json, body 1, in file order. Order is load-bearing: a shape added after
@@ -632,14 +632,14 @@ const TOOL = {
 // torus d = [ring radius, tube radius]; ellipsoid d = full diameters; the
 // plane cut removes everything below its own z.
 const TOOL_NODES = [
-  ['add', 'ellipsoid', 2.75, [0, 29, 27], [-42, 0, 0], [54.5, 45.5, 82.5]],
-  ['cut', 'ellipsoid', 5.00, [0, 47.5, 29], [-51, 0, 0], [46, 59, 78.5]],
-  ['cut', 'ellipsoid', 4.25, [0, 25, 9], [0, 0, 0], [15.5, 22, 14]],
-  ['add', 'torus', 1.50, [0, 5, 15.5], [30, 0, 0], [8, 5.75, 0]],
-  ['cut', 'torus', 2.00, [0, 12, 19], [0, 90, 0], [8, 3, 0]],
-  ['cut', 'torus', 3.50, [0, 4.5, 15], [30, 0, 0], [8.5, 2.75, 0]],
-  ['cut', 'ellipsoid', 1.50, [0, -6, 11], [-58, 0, 0], [30, 18, 14]],
-  ['cut', 'plane', 2.00, [0, 0, 8], [0, 0, 0], [0, 0, 0]]
+  ['add', 'ellipsoid', 0, [0, 0, 6], [0, -30, 180], [25, 25, 35]],
+  ['cut', 'ellipsoid', 0, [0, 0, 6], [0, -30, 180], [23, 23, 33]],
+  ['cut', 'plane', 0, [-6, 0, 0], [0, 62, 180], [0, 0, 0]],
+  ['add', 'ellipsoid', 4.5, [-14.266247946197, 0, 4], [0, 0, 0], [14, 8.5, 14]],
+  ['cut', 'torus', 0, [-14, 0, 4], [-86.530223807624, 0, 0], [4.5, 1.5, 0]],
+  ['cut', 'ellipsoid', 1, [2, 0, 3.816466031276], [91, 13, 180], [30, 26.5, 23]],
+  ['add', 'torus', 4, [-16.46241654316, 0, 0.100993474262], [-50, 0, 85], [5, 1.75, 0]],
+  ['cut', 'torus', 2, [-18.269319183782, 0, 1.048664616065], [0, -39, 0], [5, 1.421467019059, 0]]
 ];
 const TOOL_DEG = Math.PI / 180;
 // Each node's rotation, as the sines and cosines the inverse needs, worked
@@ -685,7 +685,12 @@ function toolNodeSDF(n, rots, X, Y, Z) {
     const k1 = Math.max(Math.hypot(x / (a * a), y / (b * b), z / (c * c)), 1e-9);
     return k0 * (k0 - 1) / k1;
   }
-  return Z - pos[2];                      // plane: the region the cut removes
+  // plane: the region the cut removes, measured on the ROTATED point. Reading
+  // world Z here flattens every tilted plane into a horizontal one -- which
+  // was invisible while the only plane in the solid had no rotation, and is
+  // 14 mm of error the moment one does. The same bug was fixed on the Python
+  // side; check_tool_port.py is what caught this copy of it.
+  return z;
 }
 
 function toolRaw(x, y, z) {
@@ -700,11 +705,12 @@ function toolRaw(x, y, z) {
 }
 
 function toolSDF(x, y, z, j, gap) {
-  // the generator runs x nose->tail and the tool runs y, so the axes swap.
+  // the solid runs the way the generator does, so the axes map straight
+  // through -- the tool this replaced ran along its own +y and needed a swap.
   // `xt` is where the solid sits and `xa` is where the cut is: they are the
   // same until tool_offset moves one off the other.
-  const tx = y / j.sWide;
-  const ty = (x - j.xt) / j.sLong + TOOL.ANCHOR;
+  const tx = (x - j.xt) / j.sLong + TOOL.ANCHOR;
+  const ty = y / j.sWide;
   const tz = (z - j.lift) / j.sTall + TOOL.PLATE;
   const s = Math.min(j.sWide, Math.min(j.sLong, j.sTall));
   // times the smallest scale, so it stays an under-estimate of true distance
@@ -1099,7 +1105,7 @@ function plateToolAt(x, y, z, C, bodyF) {
     // the tool's own extent is 11 ahead of its anchor and 35.75 behind;
     // outside that the subtraction cannot change anything, so skipping is
     // exact rather than an approximation
-    if (x < j.xt - 11.5 * j.sLong || x > j.xt + 36.5 * j.sLong) continue;
+    if (x < j.xt - 11.5 * j.sLong || x > j.xt + 16.5 * j.sLong) continue;
     F = Math.max(F, -toolSDF(x, y, z, j, p.joint_gap));
   }
   return F;
