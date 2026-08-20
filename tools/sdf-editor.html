@@ -4347,18 +4347,43 @@ function gizSize() {
   return Math.max(dist * TAN_HALF_FOV * 0.26, 1);
 }
 
+// How square-on a ring is to the camera: 1 when you are looking down its axis
+// and it draws as a full circle, 0 when its own plane contains the view
+// direction and it draws as a line.
+function axisFacing(a, C) {
+  const eye = camBasis().eye;
+  let vx = C[0] - eye[0], vy = C[1] - eye[1], vz = C[2] - eye[2];
+  const l = Math.hypot(vx, vy, vz) || 1;
+  const A = AXV[a];
+  return Math.abs((A[0] * vx + A[1] * vy + A[2] * vz) / l);
+}
+
+// Is this point on the half of the ring nearest the camera? One seen face-on
+// keeps all of itself — every point of it is equally near — and one seen
+// edge-on keeps the half you can actually see. Culling the far half is what
+// stops the back of a tilted ring lying across the front of another one,
+// which is most of what made them catch each other.
+function ringFront(P, C, eye) {
+  const ex = eye[0] - C[0], ey = eye[1] - C[1], ez = eye[2] - C[2];
+  const el = Math.hypot(ex, ey, ez) || 1;
+  const rx = P[0] - C[0], ry = P[1] - C[1], rz = P[2] - C[2];
+  const rl = Math.hypot(rx, ry, rz) || 1;
+  return (rx * ex + ry * ey + rz * ez) / (rl * el) > -0.15;
+}
+
 // What a handle can be grabbed by. Sampled along the thing you can see, so
 // what is hittable is what is drawn — a ring you can only catch at four points
 // feels broken, and an arrow with a hitbox wider than itself feels haunted.
 function gizPoints(a, C, L) {
   const out = [];
   if (gizMode === 'rotate') {
-    const U = AXV[(a + 1) % 3], V = AXV[(a + 2) % 3];
+    const U = AXV[(a + 1) % 3], V = AXV[(a + 2) % 3], eye = camBasis().eye;
     for (let i = 0; i < 48; i++) {
       const th = i / 48 * 2 * Math.PI, c = Math.cos(th), s = Math.sin(th);
-      out.push([C[0] + (U[0] * c + V[0] * s) * L,
-                C[1] + (U[1] * c + V[1] * s) * L,
-                C[2] + (U[2] * c + V[2] * s) * L]);
+      const P = [C[0] + (U[0] * c + V[0] * s) * L,
+                 C[1] + (U[1] * c + V[1] * s) * L,
+                 C[2] + (U[2] * c + V[2] * s) * L];
+      if (ringFront(P, C, eye)) out.push(P);
     }
     return out;
   }
@@ -4379,11 +4404,13 @@ function gizLines(a, C, L) {
                            C[2] + A[2] * t + U[2] * u + V[2] * v];
   const seg = (p, q) => out.push(p[0], p[1], p[2], q[0], q[1], q[2]);
   if (gizMode === 'rotate') {
-    const N = 48;
+    const N = 48, eye = camBasis().eye;
     for (let i = 0; i < N; i++) {
       const t0 = i / N * 2 * Math.PI, t1 = (i + 1) / N * 2 * Math.PI;
-      seg(at(0, Math.cos(t0) * L, Math.sin(t0) * L),
-          at(0, Math.cos(t1) * L, Math.sin(t1) * L));
+      const p = at(0, Math.cos(t0) * L, Math.sin(t0) * L);
+      const q = at(0, Math.cos(t1) * L, Math.sin(t1) * L);
+      const m = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2, (p[2] + q[2]) / 2];
+      if (ringFront(m, C, eye)) seg(p, q);
     }
     return new Float32Array(out);
   }
@@ -4420,14 +4447,31 @@ function gizPick(px, py) {
   if (!picked.size) return -1;
   const w = canvas.clientWidth || innerWidth, h = canvas.clientHeight || innerHeight;
   const M = mvpMatrix(w / h), C = selCentre(), L = gizSize();
-  let best = -1, bd = 26;                       // a fingertip, in pixels
-  for (let a = 0; a < 3; a++)
+  // An arrow or a cube is a small target at the end of a stick and wants a
+  // generous radius. A ring is a circle ninety pixels across: the same radius
+  // turns most of the widget into one, which is how a drag meant for the
+  // camera ended up turning the model instead.
+  const GRAB = gizMode === 'rotate' ? 16 : 26;
+  let best = -1, bs = 1e9;
+  for (let a = 0; a < 3; a++) {
+    // A ring whose plane nearly contains the view direction is not offered at
+    // all. It cannot be dragged sensibly — the angle it measures is one in its
+    // own plane, and edge-on a pixel of finger is most of a turn — so what it
+    // mostly did was catch drags meant for something else. Orbit a little and
+    // it comes back.
+    const facing = gizMode === 'rotate' ? axisFacing(a, C) : 1;
+    if (facing < 0.15) continue;
     for (const P of gizPoints(a, C, L)) {
       const sp = projectPt(P, M, w, h);
       if (!sp) continue;
       const dd = Math.hypot(sp[0] - px, sp[1] - py);
-      if (dd < bd) { bd = dd; best = a; }
+      // Where two are within reach, the one you are facing more squarely is
+      // the one you meant: an edge-on ring has to be nearer the finger than a
+      // face-on one to win.
+      const score = dd * (1.35 - 0.35 * facing);
+      if (dd < GRAB && score < bs) { bs = score; best = a; }
     }
+  }
   return best;
 }
 
@@ -4467,6 +4511,7 @@ function ringAngle(px, py, C, a) {
 function gizStart(a, px, py) {
   const C = selCentre().slice();
   if (gizMode === 'rotate') {
+    if (axisFacing(a, C) < 0.15) return false;
     const ang = ringAngle(px, py, C, a);
     if (ang === null) return false;
     gizDrag = { a, mode: 'rotate', C, last: ang };
