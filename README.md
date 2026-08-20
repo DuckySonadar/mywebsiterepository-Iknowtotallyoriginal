@@ -433,12 +433,27 @@ three buttons down the left edge says what its handles do:
 - **Move** — an arrow per axis. Drag one and the selection slides along that
   axis only.
 - **Turn** — a ring per axis. Drag one and the selection rotates about that
-  axis, through the angle your finger travelled *along the ring*, not across
-  the screen — so a ring seen almost edge-on still turns by what you meant.
+  axis, through the angle your finger travelled *along the ring* rather than
+  across the screen.
 - **Scale** — a cube per axis. Dragging any of them scales **uniformly**,
   which is what the Scale slider does and for the same reason: per-axis
   scaling of a rotated assembly is not expressible here, and three separate
   handles must not imply otherwise.
+
+Only the near half of each ring is drawn, and only what is drawn can be
+grabbed. Three full circles at the same centre put the back of each one
+across the front of the others, and with a fingertip's worth of tolerance
+around all of it, near enough every press inside the widget caught a ring —
+including the ones meant to orbit the view. A ring is also a long target
+rather than a small one, so it takes a tighter tolerance than an arrow does.
+
+A ring whose plane nearly contains the view direction is not offered at all.
+Edge-on it draws as a line, and the angle it measures is one in its own
+plane, so a pixel of finger is most of a turn: what it mostly did was catch
+drags meant for something else. Orbit a little and it comes back. Where two
+rings are both within reach, the one you are facing more squarely wins.
+
+Two fingers are always the camera, whatever the widget is doing.
 
 The handles are drawn in the axis colours — X red, Y green, Z violet — and
 those are the colours on the matching sliders in the panel, so the arrow on
