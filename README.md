@@ -345,9 +345,20 @@ A model is an ordered list of shapes, each applied to what came before:
   sphere cut at a height you choose, so less or more than a hemisphere),
   arc (a torus swept through part of a turn — the hinge and spring shape),
   link (a chain link standing on end, so the next one threads through it),
-  and a **plane cut**. An unrotated plane cut at z = 0 keeps everything
+  **right triangle** (below), and a **plane cut**. An unrotated plane cut at z = 0 keeps everything
   above the plate, which is the flat-bottom trick every print-in-place part
   wants. The readout warns when the model reaches below the plate.
+
+  The **right triangle** is a slab: Leg X and Leg Y are the two sides at
+  the right angle, lying along X and Y, and Thickness is Z. Its
+  **Hypotenuse** row swaps the straight side for a curve bowed in toward
+  the corner: **Conic**, with a Rho slider (0.5 is a parabola, lower is
+  flatter, higher pulls in tight), or **Elliptical**, the quarter ellipse
+  through the two leg tips centred on the far corner — which is the conic
+  at rho 0.414. Both curves leave the tips tangent to the legs, so the slab
+  thins to a knife edge there: it is the profile of a cove, the material a
+  fillet adds in an inside corner, and the last millimetre or so of each
+  tip is thinner than the STL grid can keep.
 
   The kernel carries four more — profile, wire, sweep and construct — that
   this editor does not offer, because each is a *drawing* held in a library
@@ -414,6 +425,36 @@ come out welded.
 mode: one finger slides the selection across the screen plane, two fingers
 raise and lower it. ⤢ frames the model in whatever strip of screen the
 sheet leaves visible. Drag or tap the grip to resize the sheet.
+
+### Importing an STL
+
+**Import STL** (under *Baked*) brings in a mesh made anywhere else and bakes
+it into the library, the same as **Bake this body** does with a body: one
+shape that can be placed, blended, cut with and cut into. It is how a
+downloaded part gets melded with shapes made here.
+
+The dialog asks three things, because each has to be decided before baking:
+
+- **Units and Scale.** STL carries no units, and a baked shape is distances
+  in millimetres that cannot be stretched afterwards — Scale leaves baked
+  shapes alone for that reason. The dialog shows the size in mm as you
+  choose, and says so when it looks like the wrong unit.
+- **Grid** — the sample spacing, chosen for about two million samples to
+  start with. Finer is truer and the document grows as the cube of it; the
+  dialog shows the size, and warns past what the browser usually keeps for
+  autosave (Save still writes it to a file).
+- **Centre it, standing on the plate**, or leave it where the file had it.
+
+Meshes from elsewhere are often not clean, and the baker allows for the
+usual faults: overlapping shells that were never unioned read as one solid,
+and a few triangles wound the wrong way do not flip anything. A mesh with
+real holes in it may still come out with a wrong patch inside — rays vote
+across three axes, so a small crack is outvoted, but a missing face is a
+missing face. How the field is made, and how closely it was measured
+against the mesh, is in SinterForm's README under *Baked fields*.
+
+Undo takes the placed shape back off; the library entry stays, as it does
+after a bake, and **✕** removes it.
 
 ### The widget
 
