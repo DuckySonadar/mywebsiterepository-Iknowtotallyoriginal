@@ -114,8 +114,13 @@
   .node.body .nm { font-weight:600; }
   .node.body.sel { border-color:var(--acc); background:#2b2519; }
   #bodies { display:flex; flex-direction:column; gap:5px; }
-  #bnm { width:100%; background:#10141a; color:var(--ink); font:inherit;
+  #bnm, .fld { width:100%; background:#10141a; color:var(--ink); font:inherit;
          border:1px solid var(--line); border-radius:8px; padding:9px 10px; }
+  .stlgrid { display:grid; grid-template-columns:auto 1fr; gap:8px 10px;
+             align-items:center; font-size:12.5px; }
+  .stlgrid label { color:var(--dim); }
+  .stlgrid .chk { display:flex; gap:8px; align-items:center; color:var(--ink); }
+  .stlgrid .chk input { width:18px; height:18px; }
   .node .bd { font-size:10px; letter-spacing:.04em; padding:2px 6px;
               border-radius:5px; border:1px solid var(--line); color:var(--dim);
               max-width:96px; overflow:hidden; text-overflow:ellipsis;
@@ -252,6 +257,9 @@
     <div id="baked"></div>
     <div class="bar" style="margin-top:6px">
       <button class="btn sm" id="bakeBtn">Bake this body</button>
+      <button class="btn sm" id="stlInBtn">Import STL</button>
+      <input type="file" id="stlInp" accept=".stl,model/stl,application/sla"
+             style="display:none">
     </div>
     <h3>Bodies <span style="color:var(--dim);text-transform:none;letter-spacing:0"
         id="bodyCount"></span></h3>
@@ -355,7 +363,7 @@ const MAXFIELDS = 4;
 const { PRIMS, PRIM_KEYS, OPS, RAD, dimIsLength, dimUnit, roundSlot,
         decodeField, encodeField, sampleField,
         smin, smax, invRot,
-        sceneSDF, sceneBounds, surfaceNets, meshToSTL } = SF;
+        sceneSDF, sceneBounds, surfaceNets, meshToSTL, parseSTL, meshField } = SF;
 
 // `baked` on a primitive means its shape is not in the node: it lives in a
 // library on the document and the node's `fi` says which entry. The kernel
@@ -450,6 +458,11 @@ function bakeBody(id, res) {
   const lo = [0, 1, 2].map(a => B.lo[a] - pad);
   const hi = [0, 1, 2].map(a => B.hi[a] + pad);
   const n = [0, 1, 2].map(a => Math.max(2, Math.ceil((hi[a] - lo[a]) / res) + 1));
+  // The samples are taken every `res` from lo, so the far wall is wherever
+  // (n - 1) * res puts it -- not the padded bound, which is up to a cell
+  // short of that. Taking the bound as the box squeezed the whole grid into
+  // it, and the shape came back shrunk toward its far corner by up to a cell.
+  for (let a = 0; a < 3; a++) hi[a] = lo[a] + (n[a] - 1) * res;
   const total = n[0] * n[1] * n[2];
   if (total > 24e6) throw new Error(
     `${(total / 1e6).toFixed(0)} M samples — coarsen it`);
@@ -2176,6 +2189,146 @@ $('bakeBtn').onclick = () => {
   } catch (e) { undo(); showErr('bake: ' + e.message); }
 };
 
+// ---------- STL in ----------
+// A mesh from anywhere else, baked into the library the way a body is: one
+// shape you can place, cut with, cut into and blend, at the cost of a texture
+// lookup. The kernel does the work (parseSTL, meshField); this is the asking.
+//
+// What has to be asked is the scale, and it has to be asked now. A baked
+// field's numbers are millimetres, so it cannot be resized afterwards the way
+// a primitive can -- Scale leaves baked shapes alone for exactly that reason
+// -- and STL carries no units at all. A part from a CAD package in inches
+// arrives 25.4 times too small and looks like a speck.
+$('stlInBtn').onclick = () => {
+  if (SF.fields.length >= MAXFIELDS) {
+    showErr(`import STL: the baked library holds ${MAXFIELDS}; delete one first`);
+    return;
+  }
+  $('stlInp').click();
+};
+$('stlInp').onchange = e => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';        // so the same file can be picked twice
+  if (!file) return;
+  const r = new FileReader();
+  r.onload = () => {
+    let mesh;
+    try { mesh = parseSTL(r.result); }
+    catch (err) { showErr('import STL: ' + err.message); return; }
+    stlDialog(file.name, mesh);
+  };
+  r.onerror = () => showErr('import STL: could not read that file');
+  r.readAsArrayBuffer(file);
+};
+
+const STL_UNITS = [['mm', 1], ['cm', 10], ['inch', 25.4], ['m', 1000]];
+// Past this the document is bigger than most browsers keep for one page, and
+// autosave stops quietly -- so the dialog says so before, not after.
+const STORE_SOFT = 4e6;
+
+function stlDialog(fname, mesh) {
+  const name = (fname.replace(/\.stl$/i, '').trim() || 'Mesh').slice(0, 24);
+  const size = [0, 1, 2].map(a => mesh.hi[a] - mesh.lo[a]);
+  const esc = t => t.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;',
+                                               '>': '&gt;', '"': '&quot;' })[c]);
+  openModal('Import STL',
+    `<p>${esc(fname)}: ${mesh.count.toLocaleString()} triangles, `
+    + `${size.map(fmt).join(' × ')} in the file's own units.</p>`
+    + '<div class="stlgrid">'
+    + '<label for="stlU">Units</label><select id="stlU">'
+    + STL_UNITS.map(([u, f]) => `<option value="${f}">${u}</option>`).join('')
+    + '</select>'
+    + '<label for="stlS">Scale</label>'
+    + '<input class="fld" id="stlS" type="text" inputmode="decimal" value="1">'
+    + '<label for="stlR">Grid, mm</label>'
+    + '<input class="fld" id="stlR" type="text" inputmode="decimal">'
+    + '<span></span><label class="chk"><input type="checkbox" id="stlC" checked>'
+    + 'Centre it, standing on the plate</label>'
+    + '</div><p id="stlInfo"></p>'
+    + '<div class="bar"><button class="btn" id="stlGo">Import</button></div>'
+    + '<p>The scale is fixed once it is baked: a baked shape is distances in '
+    + 'millimetres, and those do not stretch. Finer grids are truer and the '
+    + 'document grows as the cube of it.</p>',
+    () => {
+      let gridTouched = false;
+      const num = id => parseFloat(String($(id).value).replace(',', '.'));
+      const factor = () => +$('stlU').value * (num('stlS') > 0 ? num('stlS') : NaN);
+      const pad = res => Math.max(2 * res, 1.5);     // what meshField uses
+      const cells = res => [0, 1, 2].map(a =>
+        Math.max(2, Math.ceil((size[a] * factor() + 2 * pad(res)) / res) + 1));
+      // about two million samples: a couple of seconds and a few MB
+      const autoRes = () => {
+        let res = 0.2;
+        while (res < 20 && cells(res).reduce((x, y) => x * y, 1) > 2e6) res += 0.05;
+        return +res.toFixed(2);
+      };
+      const update = () => {
+        const f = factor();
+        if (!(f > 0)) { $('stlInfo').textContent = 'Scale has to be a positive number.'; return; }
+        if (!gridTouched) $('stlR').value = autoRes();
+        const res = num('stlR');
+        if (!(res >= 0.05)) { $('stlInfo').textContent = 'Grid has to be 0.05 mm or more.'; return; }
+        const c = cells(res), total = c[0] * c[1] * c[2];
+        const mm = size.map(v => v * f), big = Math.max(...mm);
+        const bytes = total * 4 / 3;
+        $('stlInfo').textContent =
+          `${mm.map(fmt).join(' × ')} mm — ${c.join('×')} = `
+          + `${(total / 1e6).toFixed(2)} M samples, about `
+          + `${(bytes / 1e6).toFixed(1)} MB in the document.`
+          + (total > 24e6 ? ' Too many: coarsen the grid.'
+             : bytes > STORE_SOFT ? ' That is more than the browser usually keeps '
+               + 'for autosave; use Save to keep it as a file.' : '')
+          + (big < 2 ? ' That is tiny — is the file in metres, or inches?'
+             : big > 600 ? ' That is bigger than most print beds — check the units.' : '');
+      };
+      $('stlU').onchange = update;
+      $('stlS').oninput = update;
+      $('stlR').oninput = () => { gridTouched = true; update(); };
+      update();
+      $('stlGo').onclick = () => {
+        const f = factor(), res = num('stlR');
+        if (!(f > 0) || !(res >= 0.05)) return;
+        const centre = $('stlC').checked;
+        $('stlGo').disabled = true;
+        $('stlGo').textContent = 'Baking…';
+        setStatus('baking ' + name + '…');
+        // let the button repaint before the page is busy for a second or two
+        setTimeout(() => {
+          try {
+            const tris = f === 1 ? mesh.tris : mesh.tris.map(v => v * f);
+            const t0 = performance.now();
+            const r = meshField(tris, { res, pad: pad(res), name });
+            const ms = Math.round(performance.now() - t0);
+            if (SF.fields.length >= MAXFIELDS)
+              throw new Error(`the library holds ${MAXFIELDS}; delete one first`);
+            snapshot();
+            SF.fields.push(r.field);
+            const fi = SF.fields.length - 1;
+            // r.centre is where the grid's middle is in the file's frame; to
+            // centre the *mesh* rather than the grid, take its own middle off,
+            // and its lowest point for z, so it stands on the plate
+            const p = centre
+              ? [0, 1, 2].map(a => r.centre[a]
+                  - (a < 2 ? (mesh.lo[a] + mesh.hi[a]) / 2 : mesh.lo[a]) * f)
+              : r.centre.slice();
+            const c = makeNode('field', { fi, b: activeBody, p, d: r.field.box.slice() });
+            nodes.push(c);
+            sel = nodes.length - 1; picked = new Set([c]);
+            activeField = fi;
+            closeModal();
+            sceneChanged(); renderList(); renderInspector(); save(); needDraw();
+            frameModel();
+            setStatus(`imported ${name}: ${mesh.count.toLocaleString()} triangles `
+                      + `baked in ${ms} ms`);
+          } catch (err) {
+            closeModal();
+            showErr('import STL: ' + err.message);
+          }
+        }, 30);
+      };
+    });
+}
+
 // ---------- body list ----------
 // The whole point of a body is that it is a thing you work on, so it needs to
 // be visible without hunting through the shapes: what exists, which one you
@@ -2338,10 +2491,11 @@ const GLYPH_FOR = [
   [/^Rotate Z$/, 'rotZ', 'az'],
   [/^Scale$/, 'scale'], [/^Blend$/, 'blend'], [/^Corner round$/, 'round'],
   [/radius$/i, 'radius'], [/^Sides$/, 'sides'], [/^Sweep$/, 'angle'],
-  [/^(Size X|Base|Half width)$/, 'sizeX'],
-  [/^(Size Y|Half depth)$/, 'sizeY'],
+  [/^(Size X|Base|Half width|Leg X)$/, 'sizeX'],
+  [/^(Size Y|Half depth|Leg Y)$/, 'sizeY'],
+  [/^Rho$/, 'round'],
   // a capsule's Length and a link's are along its own Z, like every Height
-  [/^(Size Z|Height|Cut height|Length|Half height)$/, 'sizeZ'],
+  [/^(Size Z|Height|Cut height|Length|Half height|Thickness)$/, 'sizeZ'],
   [/^Size$/, 'span']
 ];
 function glyph(name, axis) {
@@ -2395,7 +2549,9 @@ function editableValue(out, num, get, commit, after) {
 }
 
 // ---------- one slider row ----------
-function sliderRow(label, unit, get, set, min, max, step) {
+// `places` is for the rare row whose numbers are not millimetres to a tenth --
+// a rho of 0.42 shown as 0.4 would be a slider that seems to do nothing.
+function sliderRow(label, unit, get, set, min, max, step, places) {
   const row = document.createElement('div');
   row.className = 'row';
   row.innerHTML =
@@ -2411,7 +2567,7 @@ function sliderRow(label, unit, get, set, min, max, step) {
   const [minus, plus] = row.querySelectorAll('.step');
   const show = () => {
     const v = get();
-    out.textContent = fmt(v) + unit;
+    out.textContent = (places ? (+v).toFixed(places) : fmt(v)) + unit;
     if (document.activeElement !== inp) inp.value = v;
   };
   let touched = false;
@@ -2432,6 +2588,45 @@ function sliderRow(label, unit, get, set, min, max, step) {
   editableValue(out, num, get, v => { commit(v); touched = false; }, show);
   row.refresh = show;
   show();
+  return row;
+}
+
+// ---------- the right triangle's hypotenuse ----------
+// Which curve, in words. The kernel turns it into the number its shader reads
+// (roundSlot), so the ellipse is not a rho this file has to remember, and a
+// conic's rho survives a trip to the ellipse and back.
+const HYPS = [['line', 'Straight'], ['conic', 'Conic'], ['ellipse', 'Elliptical']];
+function hypRow(n) {
+  const cur = n.hyp === 'conic' || n.hyp === 'ellipse' ? n.hyp : 'line';
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.innerHTML = '<label><span>Hypotenuse</span></label>';
+  const seg = document.createElement('div');
+  seg.className = 'seg';
+  HYPS.forEach(([k, lbl]) => {
+    const b = document.createElement('button');
+    b.textContent = lbl; b.className = cur === k ? 'on' : '';
+    b.style.flex = '1';
+    b.onclick = () => {
+      if (cur === k) return;
+      snapshot();
+      n.hyp = k;
+      if (k === 'conic' && !(n.rho > 0)) n.rho = 0.5;
+      renderInspector(); save(); needDraw();
+    };
+    seg.appendChild(b);
+  });
+  row.appendChild(seg);
+  const p = document.createElement('p');
+  p.style.cssText = 'color:var(--dim);font-size:11.5px;margin:6px 0 0';
+  p.textContent = cur === 'ellipse'
+    ? 'A quarter ellipse through the two leg tips, centred on the far corner '
+      + '\u2014 the conic at rho 0.414.'
+    : cur === 'conic'
+      ? 'Bowed in toward the corner, tangent to both legs. 0.5 is a parabola; '
+        + 'lower is flatter, higher pulls in tight.'
+      : 'Legs along X and Y from the right angle; Thickness is Z.';
+  row.appendChild(p);
   return row;
 }
 
@@ -2578,6 +2773,12 @@ function renderInspector() {
     add(sliderRow(lbl, dimUnit(n.t, i), () => n.d[i], v => n.d[i] = v, mn, mx, st)));
   if (P.round)
     add(sliderRow('Corner round', ' mm', () => n.round, v => n.round = v, 0, 20, 0.25));
+  if (n.t === 'tri') {
+    host.appendChild(hypRow(n));
+    if (n.hyp === 'conic')
+      add(sliderRow('Rho', '', () => n.rho, v => n.rho = v,
+                    0.05, SF.TRI_RHO_MAX, 0.01, 2));
+  }
 
   // With several shapes picked, Place drives the whole selection as one rigid
   // piece: the slider still reads this shape's value, but what it applies is
