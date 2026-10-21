@@ -76,6 +76,15 @@
             color:#ffb3b3; border:1px solid #7a2535; border-radius:8px;
             padding:6px 12px; font-size:12px; display:none; max-width:92vw;
             z-index:30; }
+  #snapbar { position:fixed; top:calc(env(safe-area-inset-top) + 56px);
+             left:50%; transform:translateX(-50%); z-index:7; display:none;
+             background:#1a2027f2; border:1px solid var(--line);
+             border-radius:12px; padding:9px 10px; width:min(440px,92vw); }
+  #snapbar.on { display:block; }
+  #snapbar p { font-size:12.5px; margin:0 2px 8px; color:var(--ink); }
+  #snapbar .row2 { display:flex; gap:8px; align-items:stretch; }
+  #snapbar .seg { flex:1; }
+  #snapbar .seg button { flex:1; padding:8px 6px; font-size:12.5px; }
   #hint { position:fixed; left:12px; z-index:4; bottom:calc(var(--sheet) + 8px);
           color:var(--dim); font-size:11.5px; pointer-events:none;
           max-width:min(60vw,420px); text-shadow:0 1px 3px #000; }
@@ -219,10 +228,24 @@
   </div>
   <button class="btn" id="undoBtn" title="Undo">↶</button>
   <button class="btn" id="viewBtn" title="Frame the model">⤢</button>
+  <button class="btn" id="snapBtn" title="Snap two flat faces into one plane">Snap</button>
   <div id="status">starting…</div>
 </div>
 <div id="errbar"></div>
 <div id="hint"></div>
+<!-- Snap's own bar: which step you are on, which way round the faces go, and
+     the way out. Shown only while snapping, so it never competes with the
+     shape tools for the space. -->
+<div id="snapbar">
+  <p id="snapMsg"></p>
+  <div class="row2">
+    <div class="seg" id="snapSide">
+      <button data-flush="0" class="on" title="The faces meet, facing each other">Face to face 180°</button>
+      <button data-flush="1" title="The faces sit side by side, facing the same way">Flush 0°</button>
+    </div>
+    <button class="btn" id="snapDone">Done</button>
+  </div>
+</div>
 
 <!-- The move / rotate / scale widget's mode switch. Hidden until something is
      selected, because the widget it drives is drawn at the selection. -->
@@ -639,6 +662,7 @@ function scaleSelection(f) {
         if (dimIsLength(n.t, i)) n.d[i] *= f;
     n.k *= f;
     if (n.round) n.round *= f;
+    if (n.land) n.land *= f;              // a length, like the corner radius
   }
 }
 
@@ -1854,6 +1878,7 @@ function draw() {
   if (meshed) drawMeshed(w, h); else drawMarched(w, h);
   drawOverlay(w, h, meshed);
   drawGizmo(w, h);
+  drawSnapMarks(w, h);
 }
 
 function drawMarched(w, h) {
@@ -2034,7 +2059,7 @@ function endPtr(e) {
   // a long press, so an orbit that happens to end where it started is not
   // mistaken for one.
   if (!wasGiz && !P.length && tapFrom && tapMoved < 8 && Date.now() - tapAt < 700)
-    tapPick(e.clientX, e.clientY);
+    (snapOn ? snapTap : tapPick)(e.clientX, e.clientY);
   tapFrom = null;
   markInteracting(true);
 }
@@ -2052,6 +2077,294 @@ function tapPick(px, py) {
   // otherwise marked somewhere you cannot see
   const row = document.querySelector('#nodes .node.sel, #nodes .node.pick');
   if (row) row.scrollIntoView({ block: 'nearest' });
+}
+// ---------- snapping two flat faces into one plane ----------
+// Tap a flat face, then a flat face on something else: the lighter of the two
+// turns and slides until its face lies in the other's plane, and the heavier
+// one does not move. Face to face (180°) leaves the two faces touching, as
+// for stacking or gluing; flush (0°) leaves them side by side facing the same
+// way, as for lining up two tops.
+//
+// What moves is a *part*: the whole body the face belongs to, when the two
+// faces are on different bodies -- moving one shape out of a body would tear
+// the part apart. Two faces on the same body move just the shape tapped, which
+// is the only way to arrange the shapes inside one part. Cuts aimed at that
+// body alone travel with it; a cut aimed at several bodies, or all of them
+// (the build-plate cut), belongs to none of them and stays.
+//
+// The motion is the least that does the job: a turn about the tapped point by
+// the smallest angle that brings the normals into line, then a slide along the
+// stationary face's normal. Nothing slides within the plane -- where the parts
+// sit along the face is left as you had it.
+let snapOn = false, snapFlush = false, snapFirst = null, lastSnap = null;
+// `$` is defined further down the file, after this runs
+const byId = id => document.getElementById(id);
+
+const v3sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const v3dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const v3cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                           a[0] * b[1] - a[1] * b[0]];
+const v3norm = a => { const l = Math.hypot(a[0], a[1], a[2]) || 1;
+                      return [a[0] / l, a[1] / l, a[2] / l]; };
+
+// A body's own fold: its adds and every cut that reaches it. A face is
+// measured on this rather than the scene, so a flat a cut made counts as a
+// face, and a neighbouring body touching it cannot bend it.
+const bodyFold = id => [{ id, nodes: nodes.filter(n =>
+  n.on && (n.op === 'add' ? n.b === id : hits(n, id))) }];
+
+// The face under a tap: the point, its plane, and whether it is flat. The
+// normal is not the gradient at one point -- on a baked shape that is a
+// difference of quantised samples -- but Newell's normal of a ring of points
+// pulled onto the surface around the tap, and the ring is what decides
+// flatness: every point within 0.06 mm of one plane, and that plane within
+// 5° of the surface's own normal. A ring that runs off the face onto the next
+// one fails, so it is tried at 3, 1.5 and 0.75 mm before giving up.
+function faceAt(px, py) {
+  const plan = buildPlan(nodes);
+  if (!plan.length) return null;
+  const { o, d } = rayAt(px, py);
+  let t = 1, hit = null;
+  for (let i = 0; i < 220 && t < 4000; i++) {
+    const x = o[0] + d[0] * t, y = o[1] + d[1] * t, z = o[2] + d[2] * t;
+    const dist = sceneSDF(plan, x, y, z);
+    if (dist < 0.06) { hit = [x, y, z]; break; }
+    t += Math.max(dist * 0.72, 0.05);
+  }
+  if (!hit) return null;
+  const node = ownerAt(hit, plan);
+  if (!node) return null;
+  const fold = bodyFold(node.b);
+  const f = p => sceneSDF(fold, p[0], p[1], p[2]);
+  const grad = p => {
+    const h = 0.005;
+    return v3norm([f([p[0] + h, p[1], p[2]]) - f([p[0] - h, p[1], p[2]]),
+                   f([p[0], p[1] + h, p[2]]) - f([p[0], p[1] - h, p[2]]),
+                   f([p[0], p[1], p[2] + h]) - f([p[0], p[1], p[2] - h])]);
+  };
+  const onto = p => {
+    for (let i = 0; i < 4; i++) {
+      const v = f(p), g = grad(p);
+      p = [p[0] - v * g[0], p[1] - v * g[1], p[2] - v * g[2]];
+    }
+    return p;
+  };
+  const c0 = onto(hit), n0 = grad(c0);
+  const u = v3norm(v3cross(n0, Math.abs(n0[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+  const v = v3cross(n0, u);
+  for (const rr of [3, 1.5, 0.75]) {
+    const ring = [];
+    for (let k = 0; k < 12; k++) {
+      const a = k * Math.PI / 6, cs = Math.cos(a) * rr, sn = Math.sin(a) * rr;
+      ring.push(onto([c0[0] + cs * u[0] + sn * v[0], c0[1] + cs * u[1] + sn * v[1],
+                      c0[2] + cs * u[2] + sn * v[2]]));
+    }
+    const all = ring.concat([c0]);
+    const c = [0, 1, 2].map(i => all.reduce((m, q) => m + q[i], 0) / all.length);
+    let N = [0, 0, 0];
+    for (let k = 0; k < 12; k++) {
+      const x = v3cross(v3sub(ring[k], c), v3sub(ring[(k + 1) % 12], c));
+      N = [N[0] + x[0], N[1] + x[1], N[2] + x[2]];
+    }
+    N = v3norm(N);
+    if (v3dot(N, n0) < 0) N = [-N[0], -N[1], -N[2]];
+    const dev = Math.max(...all.map(q => Math.abs(v3dot(N, v3sub(q, c)))));
+    if (dev < 0.06 && v3dot(N, n0) > Math.cos(5 * D2R))
+      return { node, body: node.b, point: c0, normal: N, flat: true };
+  }
+  return { node, body: node.b, point: c0, normal: n0, flat: false };
+}
+
+// What a face carries with it when it moves, and what that weighs.
+function snapUnit(face, other) {
+  if (face.body !== other.body) {
+    const id = face.body;
+    return { name: bodyName(id), fold: bodyFold(id),
+             nodes: nodes.filter(n => n.op === 'add' ? n.b === id
+                                      : !!n.tg && n.tg.length === 1 && n.tg[0] === id) };
+  }
+  return { name: PRIMS[face.node.t].name, nodes: [face.node],
+           fold: [{ id: face.body, nodes: [face.node] }] };
+}
+// Volume by counting the samples inside, on a grid over the fold's bounds.
+// Density is the same everywhere here, so the larger volume is the larger
+// mass; 28 cells a side is coarse, but it only has to say which is bigger.
+function foldVolume(fold) {
+  const B = sceneBounds(fold[0].nodes);
+  if (!B) return 0;
+  const N = 28, step = [0, 1, 2].map(a => Math.max((B.hi[a] - B.lo[a]) / N, 1e-6));
+  let inside = 0;
+  for (let i = 0; i < N; i++)
+    for (let j = 0; j < N; j++)
+      for (let k = 0; k < N; k++)
+        if (sceneSDF(fold, B.lo[0] + (i + 0.5) * step[0], B.lo[1] + (j + 0.5) * step[1],
+                     B.lo[2] + (k + 0.5) * step[2]) < 0) inside++;
+  return inside * step[0] * step[1] * step[2];
+}
+
+// The rotation taking unit vector a onto unit vector b by the smallest angle.
+// Opposite vectors have no smallest turn; any half turn about an axis square
+// to them will do, and the one nearest a world axis keeps it predictable.
+function rotBetween(a, b) {
+  const c = v3dot(a, b), k = v3cross(a, b), s = Math.hypot(k[0], k[1], k[2]);
+  if (s < 1e-9) {
+    if (c > 0) return [1, 0, 0, 0, 1, 0, 0, 0, 1];
+    const w = v3norm(v3cross(a, Math.abs(a[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+    return [2 * w[0] * w[0] - 1, 2 * w[0] * w[1], 2 * w[0] * w[2],
+            2 * w[1] * w[0], 2 * w[1] * w[1] - 1, 2 * w[1] * w[2],
+            2 * w[2] * w[0], 2 * w[2] * w[1], 2 * w[2] * w[2] - 1];
+  }
+  const x = k[0] / s, y = k[1] / s, z = k[2] / s, C = 1 - c;
+  return [c + x * x * C, x * y * C - z * s, x * z * C + y * s,
+          y * x * C + z * s, c + y * y * C, y * z * C - x * s,
+          z * x * C - y * s, z * y * C + x * s, c + z * z * C];
+}
+
+// Where every shape of the moving part ends up, or null when that would put
+// one past the position limit -- clamping one shape and not the others would
+// tear the part, so the whole move is refused instead.
+function snapPlacement(list, mv, st, flush) {
+  const t = flush ? st.normal : st.normal.map(x => -x);
+  const R = rotBetween(mv.normal, t), piv = mv.point;
+  const off = v3dot(v3sub(st.point, piv), st.normal);
+  const out = [];
+  for (const n of list) {
+    const q = mApply(R, v3sub(n.p, piv));
+    const p = [0, 1, 2].map(i => piv[i] + q[i] + off * st.normal[i]);
+    if (p.some(x => Math.abs(x) > POSLIM)) return null;
+    out.push({ n, p, r: mToEuler(mMul(R, eulerToM(n.r))) });
+  }
+  return out;
+}
+
+function snapSay(msg) { byId('snapMsg').textContent = msg; }
+function syncSnapbar() {
+  byId('snapbar').classList.toggle('on', snapOn);
+  byId('snapBtn').classList.toggle('on', snapOn);
+  for (const b of byId('snapSide').children)
+    b.classList.toggle('on', (b.dataset.flush === '1') === snapFlush);
+}
+function setSnap(on) {
+  snapOn = on; snapFirst = null; lastSnap = null;
+  if (on) {
+    // the widget's handles would catch the taps meant for faces
+    picked = new Set();
+    snapSay('Snap: tap a flat face on the first part.');
+    renderList(); renderInspector();
+  }
+  syncSnapbar(); syncGizbar(); needDraw();
+}
+byId('snapBtn').onclick = () => setSnap(!snapOn);
+byId('snapDone').onclick = () => setSnap(false);
+addEventListener('keydown', e => { if (e.key === 'Escape' && snapOn) setSnap(false); });
+
+// Flipping the side straight after a snap does that snap again the other way
+// round, inside the same undo step -- but only while the part is still where
+// the snap left it. Moved since, the flip just sets the side for the next one.
+byId('snapSide').onclick = e => {
+  const b = e.target.closest('button[data-flush]');
+  if (!b) return;
+  const flush = b.dataset.flush === '1';
+  if (flush === snapFlush) return;
+  snapFlush = flush;
+  syncSnapbar();
+  const L = lastSnap;
+  const untouched = L && L.after.every(a => nodes.indexOf(a.n) >= 0
+    && a.n.p.every((x, i) => x === a.p[i]) && a.n.r.every((x, i) => x === a.r[i]));
+  if (!untouched) return;
+  for (const a of L.before) { a.n.p = a.p.slice(); a.n.r = a.r.slice(); }
+  const place = snapPlacement(L.before.map(a => a.n), L.mv, L.st, flush);
+  if (!place) {
+    for (const a of L.after) { a.n.p = a.p.slice(); a.n.r = a.r.slice(); }
+    snapSay('The other side would put it past the edge of the build volume.');
+    return;
+  }
+  for (const q of place) { q.n.p = q.p; q.n.r = q.r; }
+  L.after = place.map(q => ({ n: q.n, p: q.p.slice(), r: q.r.slice() }));
+  snapSay(L.say());
+  refreshInspectorValues(); save(); scheduleInfo(); needDraw();
+};
+
+function snapTap(px, py) {
+  const face = faceAt(px, py);
+  if (!face) { snapSay('That missed the model. Tap a flat face.'); return; }
+  if (!face.flat) {
+    snapSay(`That spot on the ${PRIMS[face.node.t].name.toLowerCase()} is not flat`
+            + ' (or the flat is under 1.5 mm across). Tap a flat face.');
+    return;
+  }
+  if (!snapFirst) {
+    snapFirst = face; lastSnap = null;
+    snapSay(`Face on ${face.node.t === 'field' ? 'the baked shape'
+            : 'the ' + PRIMS[face.node.t].name.toLowerCase()} picked. `
+            + 'Now tap a flat face on the other part.');
+    needDraw();
+    return;
+  }
+  const a = snapFirst, b = face;
+  snapFirst = null;
+  if (a.node === b.node) {
+    snapSay('Both faces are on the same shape. Tap a face on something else.');
+    needDraw();
+    return;
+  }
+  const ua = snapUnit(a, b), ub = snapUnit(b, a);
+  const va = foldVolume(ua.fold), vb = foldVolume(ub.fold);
+  // the lighter one moves; on a tie, the first one tapped
+  const [mv, st, um, us, vm, vs] = va <= vb ? [a, b, ua, ub, va, vb]
+                                            : [b, a, ub, ua, vb, va];
+  if (um.nodes.some(n => n.mx || n.my || n.mz)) {
+    snapSay(`${um.name} is mirrored, and a mirrored copy cannot be turned on its `
+            + 'own. Turn the mirror off to snap it.');
+    needDraw();
+    return;
+  }
+  const place = snapPlacement(um.nodes, mv, st, snapFlush);
+  if (!place) {
+    snapSay('That would put it past the edge of the build volume.');
+    needDraw();
+    return;
+  }
+  snapshot();
+  const before = place.map(q => ({ n: q.n, p: q.n.p.slice(), r: q.n.r.slice() }));
+  for (const q of place) { q.n.p = q.p; q.n.r = q.r; }
+  const cc = v => (v / 1000).toFixed(v < 1000 ? 2 : 1) + ' cm³';
+  lastSnap = {
+    mv, st, before, after: place.map(q => ({ n: q.n, p: q.p.slice(), r: q.r.slice() })),
+    say: () => `Snapped ${snapFlush ? 'flush' : 'face to face'}: ${um.name} moved, `
+             + `${us.name} stayed (${cc(vm)} against ${cc(vs)}). Flip the side `
+             + 'below, or tap two more faces.'
+  };
+  snapSay(lastSnap.say());
+  renderList(); renderInspector(); save(); scheduleInfo(); needDraw();
+}
+
+// The faces in play, drawn where they are: a square in the face's plane and a
+// tick along its normal, for the face waiting for its partner and for the one
+// the last snap held still.
+function drawSnapMarks(w, h) {
+  if (!snapOn) return;
+  const marks = [snapFirst, lastSnap && lastSnap.st].filter(Boolean);
+  if (!marks.length) return;
+  const data = [];
+  for (const m of marks) {
+    const N = m.normal, c = m.point, s = 4;
+    const u = v3norm(v3cross(N, Math.abs(N[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+    const v = v3cross(N, u);
+    const P = (a, b) => [0, 1, 2].map(i => c[i] + s * (a * u[i] + b * v[i]));
+    const sq = [P(-1, -1), P(1, -1), P(1, 1), P(-1, 1)];
+    for (let k = 0; k < 4; k++) data.push(...sq[k], ...sq[(k + 1) % 4]);
+    data.push(...c, ...[0, 1, 2].map(i => c[i] + 6 * N[i]));
+  }
+  gl.disable(gl.DEPTH_TEST);
+  gl.useProgram(lineProg);
+  gl.bindVertexArray(lineVAO);
+  gl.bindBuffer(gl.ARRAY_BUFFER, lineBuf);
+  gl.uniformMatrix4fv(gl.getUniformLocation(lineProg, 'uMVP'), false, mvpMatrix(w / h));
+  gl.uniform3f(gl.getUniformLocation(lineProg, 'uC'), 0.98, 0.62, 0.22);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.DYNAMIC_DRAW);
+  gl.drawArrays(gl.LINES, 0, data.length / 3);
+  gl.bindVertexArray(null);
 }
 canvas.addEventListener('pointerup', endPtr);
 canvas.addEventListener('pointercancel', endPtr);
@@ -2620,12 +2933,15 @@ function hypRow(n) {
   const p = document.createElement('p');
   p.style.cssText = 'color:var(--dim);font-size:11.5px;margin:6px 0 0';
   p.textContent = cur === 'ellipse'
-    ? 'A quarter ellipse through the two leg tips, centred on the far corner '
+    ? 'A quarter ellipse between the two tips, centred on the far corner '
       + '\u2014 the conic at rho 0.414.'
     : cur === 'conic'
       ? 'Bowed in toward the corner, tangent to both legs. 0.5 is a parabola; '
         + 'lower is flatter, higher pulls in tight.'
       : 'Legs along X and Y from the right angle; Thickness is Z.';
+  if (cur !== 'line')
+    p.textContent += ' The curve thins to a knife edge at each tip: Land squares '
+      + 'the tips off with a flat that wide along both legs.';
   row.appendChild(p);
   return row;
 }
@@ -2778,6 +3094,9 @@ function renderInspector() {
     if (n.hyp === 'conic')
       add(sliderRow('Rho', '', () => n.rho, v => n.rho = v,
                     0.05, SF.TRI_RHO_MAX, 0.01, 2));
+    // the flat along both legs that squares the tips off; the kernel clamps
+    // it to the shorter leg, where the triangle has become a rectangle
+    add(sliderRow('Land', ' mm', () => n.land || 0, v => n.land = v, 0, 80, 0.25));
   }
 
   // With several shapes picked, Place drives the whole selection as one rigid

@@ -76,6 +76,15 @@
             color:#ffb3b3; border:1px solid #7a2535; border-radius:8px;
             padding:6px 12px; font-size:12px; display:none; max-width:92vw;
             z-index:30; }
+  #snapbar { position:fixed; top:calc(env(safe-area-inset-top) + 56px);
+             left:50%; transform:translateX(-50%); z-index:7; display:none;
+             background:#1a2027f2; border:1px solid var(--line);
+             border-radius:12px; padding:9px 10px; width:min(440px,92vw); }
+  #snapbar.on { display:block; }
+  #snapbar p { font-size:12.5px; margin:0 2px 8px; color:var(--ink); }
+  #snapbar .row2 { display:flex; gap:8px; align-items:stretch; }
+  #snapbar .seg { flex:1; }
+  #snapbar .seg button { flex:1; padding:8px 6px; font-size:12.5px; }
   #hint { position:fixed; left:12px; z-index:4; bottom:calc(var(--sheet) + 8px);
           color:var(--dim); font-size:11.5px; pointer-events:none;
           max-width:min(60vw,420px); text-shadow:0 1px 3px #000; }
@@ -219,10 +228,24 @@
   </div>
   <button class="btn" id="undoBtn" title="Undo">↶</button>
   <button class="btn" id="viewBtn" title="Frame the model">⤢</button>
+  <button class="btn" id="snapBtn" title="Snap two flat faces into one plane">Snap</button>
   <div id="status">starting…</div>
 </div>
 <div id="errbar"></div>
 <div id="hint"></div>
+<!-- Snap's own bar: which step you are on, which way round the faces go, and
+     the way out. Shown only while snapping, so it never competes with the
+     shape tools for the space. -->
+<div id="snapbar">
+  <p id="snapMsg"></p>
+  <div class="row2">
+    <div class="seg" id="snapSide">
+      <button data-flush="0" class="on" title="The faces meet, facing each other">Face to face 180°</button>
+      <button data-flush="1" title="The faces sit side by side, facing the same way">Flush 0°</button>
+    </div>
+    <button class="btn" id="snapDone">Done</button>
+  </div>
+</div>
 
 <!-- The move / rotate / scale widget's mode switch. Hidden until something is
      selected, because the widget it drives is drawn at the selection. -->
@@ -425,7 +448,7 @@ Take distance functions from a source that states its terms — the article abov
 is the usual one — and add the function and its source to the list above in the
 same commit.
 
-Built from SinterForm bbbc6ffb1fe15588aa0fe3aa06c3703f2da0c5a2
+Built from SinterForm a2165c38328bfcc3eca9b2ce65daf5f359d5a5c3
 https://github.com/DuckySonadar/sinterform
 
 ----------------------------------------------------------------------
@@ -1324,28 +1347,39 @@ const TWINS = {
     let d_0 = d[0], d_1 = d[1], d_2 = d[2];
     let L_0 = Math.max(d_0, 1e-4), L_1 = Math.max(d_1, 1e-4);
     let q_0 = (p_0 + (0.5 * L_0)), q_1 = (p_1 + (0.5 * L_1));
-    let rho = Math.min(Math.max(r, 0.0), 0.95);
+    let code = Math.max(r, 0.0);
+    let wq = Math.floor((code / 1024.0));
+    let rq = (code - (wq * 1024.0));
+    const t0 = (rq >= 1000.0);
+    let rho = (t0 ? 0.41421356237309515 : (Math.min(rq, 950.0) * 0.001));
+    let land = Math.min((wq * 0.01), Math.min(L_0, L_1));
+    let C_0 = Math.max((L_0 - land), 0.0), C_1 = Math.max((L_1 - land), 0.0);
     let wt = (rho / (1.0 - rho));
-    const t0 = (wt > 0.0);
-    let n = (t0 ? 32 : 1);
     const t1 = (wt > 0.0);
-    let dt = (t1 ? (1.0 / 32.0) : 1.0);
+    let n = (t1 ? 32 : 1);
+    const t2 = (wt > 0.0);
+    let dt = (t2 ? (1.0 / 32.0) : 1.0);
     let lx_0 = (q_0 - Math.min(Math.max(q_0, 0.0), L_0)), lx_1 = (q_1 - 0.0);
     let ly_0 = (q_0 - 0.0), ly_1 = (q_1 - Math.min(Math.max(q_1, 0.0), L_1));
-    let dd = Math.min((lx_0*lx_0 + lx_1*lx_1), (ly_0*ly_0 + ly_1*ly_1));
+    let ex_0 = (q_0 - L_0), ex_1 = (q_1 - Math.min(Math.max(q_1, 0.0), land));
+    let ey_0 = (q_0 - Math.min(Math.max(q_0, 0.0), land)), ey_1 = (q_1 - L_1);
+    let dd = Math.min(Math.min((lx_0*lx_0 + lx_1*lx_1), (ly_0*ly_0 + ly_1*ly_1)), Math.min((ex_0*ex_0 + ex_1*ex_1), (ey_0*ey_0 + ey_1*ey_1)));
     let ins = (((q_0 < 0.0) && (q_1 >= 0.0)) && (q_1 < L_1));
-    let a_0 = L_0, a_1 = 0.0;
+    if ((((q_0 < L_0) && (q_1 >= 0.0)) && (q_1 < land))) {
+      ins = (!ins);
+    }
+    let a_0 = L_0, a_1 = land;
     let t = 0.0;
     let i = 0;
     for (; (i < n);) {
       t += dt;
       let u = (1.0 - t);
       let den = (((u * u) + (((2.0 * wt) * t) * u)) + (t * t));
-      let b_0 = (((L_0 * u) * u) / den), b_1 = (((L_1 * t) * t) / den);
+      let b_0 = (land + (((C_0 * u) * u) / den)), b_1 = (land + (((C_1 * t) * t) / den));
       let e_0 = (b_0 - a_0), e_1 = (b_1 - a_1);
       let w_0 = (q_0 - a_0), w_1 = (q_1 - a_1);
-      const t2 = Math.min(Math.max(((w_0*e_0 + w_1*e_1) / (e_0*e_0 + e_1*e_1)), 0.0), 1.0);
-      let h_0 = (w_0 - (e_0 * t2)), h_1 = (w_1 - (e_1 * t2));
+      const t3 = Math.min(Math.max(((w_0*e_0 + w_1*e_1) / Math.max((e_0*e_0 + e_1*e_1), 1e-12)), 0.0), 1.0);
+      let h_0 = (w_0 - (e_0 * t3)), h_1 = (w_1 - (e_1 * t3));
       dd = Math.min(dd, (h_0*h_0 + h_1*h_1));
       let c1 = (q_1 >= a_1);
       let c2 = (q_1 < b_1);
@@ -1714,8 +1748,9 @@ const PRIMS = {
     // A right triangle slab: the legs lie along +X and +Y from the right-angle
     // corner, which sits at (-X/2, -Y/2) so the box is centred like every
     // other primitive's. The hypotenuse is straight, or a conic bowed in toward
-    // the corner -- the node's `hyp` and `rho`, which reach the twins through
-    // the round slot (see roundSlot below and pTri in glsl.js).
+    // the corner, and a land squares off the tips -- the node's `hyp`, `rho`
+    // and `land`, which reach the twins through the round slot (see roundSlot
+    // below and pTri in glsl.js).
     name: 'Right triangle', round: false,
     dims: [['Leg X', 0.5, 160, 0.5], ['Leg Y', 0.5, 160, 0.5],
            ['Thickness', 0.5, 160, 0.5]],
@@ -1834,22 +1869,35 @@ function dimUnit(t, i) {
 // exactly like a texture that never arrived. Now both halves ask here.
 //
 // The right triangle is the second tenant, for the same reason: it has no
-// rounding, and its hypotenuse's rho has to arrive somehow. The node says
-// which curve in words -- `hyp` is 'line', 'conic' or 'ellipse' -- and only
-// 'conic' reads `rho`, so switching to the ellipse and back keeps the rho you
-// had. An ellipse is the conic at sqrt(2) - 1, and it is written here once
-// rather than at every call site.
-const TRI_RHO_MAX = 0.95;
+// rounding, and its hypotenuse's rho and its land both have to arrive
+// somehow. The node says which curve in words -- `hyp` is 'line', 'conic' or
+// 'ellipse' -- and only 'conic' reads `rho`, so switching to the ellipse and
+// back keeps the rho you had. `land` is the flat along the legs, in mm.
+//
+// Two numbers, one float: the slot holds land in hundredths of a mm times
+// 1024, plus rho in thousandths, with 1000 meaning the ellipse exactly. Both
+// fit in the 24 bits a float32 holds exactly, so the shader's unpacking is
+// exact too (see pTri in glsl.js). triRho and triLand say what the node
+// means; triSlot is what is packed.
+const TRI_RHO_MAX = 0.95, TRI_LAND_MAX = 163.83;
 function triRho(n) {
   if (n.hyp === 'ellipse') return Math.SQRT2 - 1;
   if (n.hyp !== 'conic') return 0;
   const r = +n.rho;
   return r > 0 ? Math.min(r, TRI_RHO_MAX) : 0;
 }
+function triLand(n) {
+  const w = +n.land;
+  return w > 0 ? Math.min(w, TRI_LAND_MAX) : 0;
+}
+function triSlot(n) {
+  const r = n.hyp === 'ellipse' ? 1000 : Math.round(triRho(n) * 1000);
+  return Math.round(triLand(n) * 100) * 1024 + r;
+}
 function roundSlot(n) {
   if (n && n.t === 'field')
     return ((fields[(n && n.fi) || 0] || {}).range) || 0;
-  if (n && n.t === 'tri') return triRho(n);
+  if (n && n.t === 'tri') return triSlot(n);
   return (n && n.round) || 0;
 }
 
@@ -2470,7 +2518,7 @@ const SinterForm = {
   decodeField, encodeField, sampleField,
   polygonSDF, profileExtent, wireExtent, slotItems, slotList, SWEEP_STRIDE,
   CON_STRIDE,
-  smin, smax, invRot, roundSlot, triRho, TRI_RHO_MAX,
+  smin, smax, invRot, roundSlot, triRho, triLand, triSlot, TRI_RHO_MAX, TRI_LAND_MAX,
   sceneSDF, sceneBounds, surfaceNets, mesh, meshToSTL, parseSTL, meshField
 };
 if (typeof module !== 'undefined' && module.exports) module.exports = SinterForm;
@@ -2640,15 +2688,32 @@ const GLSL = {
   // A right triangle extruded along Z: legs d.x along +X and d.y along +Y from
   // the right-angle corner, d.z thick, centred in its box like everything else.
   //
-  // The hypotenuse may bow in toward the corner as a conic, and `r` is its rho
-  // -- the round slot again, for the reason a field's range uses it: this has
-  // no corner rounding and the number has to arrive somehow. roundSlot() is
-  // what fills it, from the node's `hyp` and `rho`. The conic is the CAD one:
-  // ends at the two leg tips, tangent to the legs there (so the apex is the
+  // The hypotenuse may bow in toward the corner as a conic. The conic is the
+  // CAD one: tangent to the legs where it meets them (so the apex is the
   // corner), with its shoulder rho of the way from the chord's midpoint to the
-  // corner. rho 0 is the straight hypotenuse, 0.5 a parabola, above that a
-  // hyperbola, and sqrt(2) - 1 exactly the quarter ellipse centred on the far
-  // corner of the box -- which is all an "elliptical" hypotenuse is, here.
+  // corner. rho 0 is straight, 0.5 a parabola, above that a hyperbola, and
+  // sqrt(2) - 1 exactly the quarter ellipse centred on the far corner.
+  //
+  // Tangent to the legs means a knife edge at each tip, so the triangle also
+  // takes a *land*: a flat of width w laid along both legs, inside the box.
+  // Each tip then ends in a square face w tall, at right angles to its leg,
+  // and the curve runs between (X, w) and (w, Y) -- tangent to the land's
+  // inner edges rather than the legs. The outline is
+  //
+  //     (0,0) -> (X,0) -> (X,w) -> curve -> (w,Y) -> (0,Y) -> back
+  //
+  // and w = 0 is the bare triangle. The box never moves: Leg X and Leg Y stay
+  // the overall size, which is what the bounds and the sliders say.
+  //
+  // Both numbers come through the round slot, which is the only float a shape
+  // has spare -- the triangle has no rounding, and a field already uses the
+  // same slot for its range. roundSlot() packs them as one exact integer:
+  // land in hundredths of a mm times 1024, plus rho in thousandths, with 1000
+  // reserved for the ellipse so it stays exactly sqrt(2) - 1. Every integer to
+  // 2^24 is exact in a float32, and dividing by 1024 is exact, so the shader
+  // unpacks precisely what was packed. A raw rho passed here by hand reads as
+  // a near-straight hypotenuse with no land, which is visibly wrong rather
+  // than quietly so.
   //
   // As a rational quadratic Bezier the conic is (X(1-t)^2, Y t^2) over
   // (1-t)^2 + 2wt(1-t) + t^2 with w = rho/(1-rho). The exact distance to a
@@ -2660,30 +2725,39 @@ const GLSL = {
   // already crowds the points into the tight bend as rho rises, which is where
   // they are needed. A straight hypotenuse takes one pass, not thirty-two.
   //
-  // The horizontal leg never crosses a horizontal ray, so the crossing count
-  // only needs the vertical one written out beside the loop.
+  // Horizontal edges never cross a horizontal ray, so of the five straight
+  // edges only the two vertical ones -- the left leg and the right tip's face
+  // -- join the crossing count beside the loop.
   tri: { fn: 'pTri',
     src: `float pTri(vec3 p, vec3 d, float r){
   vec2 L = max(d.xy, vec2(1e-4));
   vec2 q = p.xy + 0.5*L;
-  float rho = clamp(r, 0.0, 0.95);
+  float code = max(r, 0.0);
+  float wq = floor(code/1024.0);
+  float rq = code - wq*1024.0;
+  float rho = (rq >= 1000.0) ? 0.41421356237309515 : min(rq, 950.0)*0.001;
+  float land = min(wq*0.01, min(L.x, L.y));
+  vec2 C = max(L - land, vec2(0.0));
   float wt = rho/(1.0 - rho);
   int n = (wt > 0.0) ? 32 : 1;
   float dt = (wt > 0.0) ? 1.0/32.0 : 1.0;
   vec2 lx = q - vec2(clamp(q.x, 0.0, L.x), 0.0);
   vec2 ly = q - vec2(0.0, clamp(q.y, 0.0, L.y));
-  float dd = min(dot(lx, lx), dot(ly, ly));
+  vec2 ex = q - vec2(L.x, clamp(q.y, 0.0, land));
+  vec2 ey = q - vec2(clamp(q.x, 0.0, land), L.y);
+  float dd = min(min(dot(lx, lx), dot(ly, ly)), min(dot(ex, ex), dot(ey, ey)));
   bool ins = q.x < 0.0 && q.y >= 0.0 && q.y < L.y;
-  vec2 a = vec2(L.x, 0.0);
+  if (q.x < L.x && q.y >= 0.0 && q.y < land) ins = !ins;
+  vec2 a = vec2(L.x, land);
   float t = 0.0;
   for (int i = 0; i < n; i++) {
     t += dt;
     float u = 1.0 - t;
     float den = u*u + 2.0*wt*t*u + t*t;
-    vec2 b = vec2(L.x*u*u, L.y*t*t)/den;
+    vec2 b = vec2(land + C.x*u*u/den, land + C.y*t*t/den);
     vec2 e = b - a;
     vec2 w = q - a;
-    vec2 h = w - e*clamp(dot(w, e)/dot(e, e), 0.0, 1.0);
+    vec2 h = w - e*clamp(dot(w, e)/max(dot(e, e), 1e-12), 0.0, 1.0);
     dd = min(dd, dot(h, h));
     bool c1 = q.y >= a.y;
     bool c2 = q.y < b.y;
@@ -3985,6 +4059,7 @@ function scaleSelection(f) {
         if (dimIsLength(n.t, i)) n.d[i] *= f;
     n.k *= f;
     if (n.round) n.round *= f;
+    if (n.land) n.land *= f;              // a length, like the corner radius
   }
 }
 
@@ -5200,6 +5275,7 @@ function draw() {
   if (meshed) drawMeshed(w, h); else drawMarched(w, h);
   drawOverlay(w, h, meshed);
   drawGizmo(w, h);
+  drawSnapMarks(w, h);
 }
 
 function drawMarched(w, h) {
@@ -5380,7 +5456,7 @@ function endPtr(e) {
   // a long press, so an orbit that happens to end where it started is not
   // mistaken for one.
   if (!wasGiz && !P.length && tapFrom && tapMoved < 8 && Date.now() - tapAt < 700)
-    tapPick(e.clientX, e.clientY);
+    (snapOn ? snapTap : tapPick)(e.clientX, e.clientY);
   tapFrom = null;
   markInteracting(true);
 }
@@ -5398,6 +5474,294 @@ function tapPick(px, py) {
   // otherwise marked somewhere you cannot see
   const row = document.querySelector('#nodes .node.sel, #nodes .node.pick');
   if (row) row.scrollIntoView({ block: 'nearest' });
+}
+// ---------- snapping two flat faces into one plane ----------
+// Tap a flat face, then a flat face on something else: the lighter of the two
+// turns and slides until its face lies in the other's plane, and the heavier
+// one does not move. Face to face (180°) leaves the two faces touching, as
+// for stacking or gluing; flush (0°) leaves them side by side facing the same
+// way, as for lining up two tops.
+//
+// What moves is a *part*: the whole body the face belongs to, when the two
+// faces are on different bodies -- moving one shape out of a body would tear
+// the part apart. Two faces on the same body move just the shape tapped, which
+// is the only way to arrange the shapes inside one part. Cuts aimed at that
+// body alone travel with it; a cut aimed at several bodies, or all of them
+// (the build-plate cut), belongs to none of them and stays.
+//
+// The motion is the least that does the job: a turn about the tapped point by
+// the smallest angle that brings the normals into line, then a slide along the
+// stationary face's normal. Nothing slides within the plane -- where the parts
+// sit along the face is left as you had it.
+let snapOn = false, snapFlush = false, snapFirst = null, lastSnap = null;
+// `$` is defined further down the file, after this runs
+const byId = id => document.getElementById(id);
+
+const v3sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const v3dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const v3cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                           a[0] * b[1] - a[1] * b[0]];
+const v3norm = a => { const l = Math.hypot(a[0], a[1], a[2]) || 1;
+                      return [a[0] / l, a[1] / l, a[2] / l]; };
+
+// A body's own fold: its adds and every cut that reaches it. A face is
+// measured on this rather than the scene, so a flat a cut made counts as a
+// face, and a neighbouring body touching it cannot bend it.
+const bodyFold = id => [{ id, nodes: nodes.filter(n =>
+  n.on && (n.op === 'add' ? n.b === id : hits(n, id))) }];
+
+// The face under a tap: the point, its plane, and whether it is flat. The
+// normal is not the gradient at one point -- on a baked shape that is a
+// difference of quantised samples -- but Newell's normal of a ring of points
+// pulled onto the surface around the tap, and the ring is what decides
+// flatness: every point within 0.06 mm of one plane, and that plane within
+// 5° of the surface's own normal. A ring that runs off the face onto the next
+// one fails, so it is tried at 3, 1.5 and 0.75 mm before giving up.
+function faceAt(px, py) {
+  const plan = buildPlan(nodes);
+  if (!plan.length) return null;
+  const { o, d } = rayAt(px, py);
+  let t = 1, hit = null;
+  for (let i = 0; i < 220 && t < 4000; i++) {
+    const x = o[0] + d[0] * t, y = o[1] + d[1] * t, z = o[2] + d[2] * t;
+    const dist = sceneSDF(plan, x, y, z);
+    if (dist < 0.06) { hit = [x, y, z]; break; }
+    t += Math.max(dist * 0.72, 0.05);
+  }
+  if (!hit) return null;
+  const node = ownerAt(hit, plan);
+  if (!node) return null;
+  const fold = bodyFold(node.b);
+  const f = p => sceneSDF(fold, p[0], p[1], p[2]);
+  const grad = p => {
+    const h = 0.005;
+    return v3norm([f([p[0] + h, p[1], p[2]]) - f([p[0] - h, p[1], p[2]]),
+                   f([p[0], p[1] + h, p[2]]) - f([p[0], p[1] - h, p[2]]),
+                   f([p[0], p[1], p[2] + h]) - f([p[0], p[1], p[2] - h])]);
+  };
+  const onto = p => {
+    for (let i = 0; i < 4; i++) {
+      const v = f(p), g = grad(p);
+      p = [p[0] - v * g[0], p[1] - v * g[1], p[2] - v * g[2]];
+    }
+    return p;
+  };
+  const c0 = onto(hit), n0 = grad(c0);
+  const u = v3norm(v3cross(n0, Math.abs(n0[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+  const v = v3cross(n0, u);
+  for (const rr of [3, 1.5, 0.75]) {
+    const ring = [];
+    for (let k = 0; k < 12; k++) {
+      const a = k * Math.PI / 6, cs = Math.cos(a) * rr, sn = Math.sin(a) * rr;
+      ring.push(onto([c0[0] + cs * u[0] + sn * v[0], c0[1] + cs * u[1] + sn * v[1],
+                      c0[2] + cs * u[2] + sn * v[2]]));
+    }
+    const all = ring.concat([c0]);
+    const c = [0, 1, 2].map(i => all.reduce((m, q) => m + q[i], 0) / all.length);
+    let N = [0, 0, 0];
+    for (let k = 0; k < 12; k++) {
+      const x = v3cross(v3sub(ring[k], c), v3sub(ring[(k + 1) % 12], c));
+      N = [N[0] + x[0], N[1] + x[1], N[2] + x[2]];
+    }
+    N = v3norm(N);
+    if (v3dot(N, n0) < 0) N = [-N[0], -N[1], -N[2]];
+    const dev = Math.max(...all.map(q => Math.abs(v3dot(N, v3sub(q, c)))));
+    if (dev < 0.06 && v3dot(N, n0) > Math.cos(5 * D2R))
+      return { node, body: node.b, point: c0, normal: N, flat: true };
+  }
+  return { node, body: node.b, point: c0, normal: n0, flat: false };
+}
+
+// What a face carries with it when it moves, and what that weighs.
+function snapUnit(face, other) {
+  if (face.body !== other.body) {
+    const id = face.body;
+    return { name: bodyName(id), fold: bodyFold(id),
+             nodes: nodes.filter(n => n.op === 'add' ? n.b === id
+                                      : !!n.tg && n.tg.length === 1 && n.tg[0] === id) };
+  }
+  return { name: PRIMS[face.node.t].name, nodes: [face.node],
+           fold: [{ id: face.body, nodes: [face.node] }] };
+}
+// Volume by counting the samples inside, on a grid over the fold's bounds.
+// Density is the same everywhere here, so the larger volume is the larger
+// mass; 28 cells a side is coarse, but it only has to say which is bigger.
+function foldVolume(fold) {
+  const B = sceneBounds(fold[0].nodes);
+  if (!B) return 0;
+  const N = 28, step = [0, 1, 2].map(a => Math.max((B.hi[a] - B.lo[a]) / N, 1e-6));
+  let inside = 0;
+  for (let i = 0; i < N; i++)
+    for (let j = 0; j < N; j++)
+      for (let k = 0; k < N; k++)
+        if (sceneSDF(fold, B.lo[0] + (i + 0.5) * step[0], B.lo[1] + (j + 0.5) * step[1],
+                     B.lo[2] + (k + 0.5) * step[2]) < 0) inside++;
+  return inside * step[0] * step[1] * step[2];
+}
+
+// The rotation taking unit vector a onto unit vector b by the smallest angle.
+// Opposite vectors have no smallest turn; any half turn about an axis square
+// to them will do, and the one nearest a world axis keeps it predictable.
+function rotBetween(a, b) {
+  const c = v3dot(a, b), k = v3cross(a, b), s = Math.hypot(k[0], k[1], k[2]);
+  if (s < 1e-9) {
+    if (c > 0) return [1, 0, 0, 0, 1, 0, 0, 0, 1];
+    const w = v3norm(v3cross(a, Math.abs(a[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+    return [2 * w[0] * w[0] - 1, 2 * w[0] * w[1], 2 * w[0] * w[2],
+            2 * w[1] * w[0], 2 * w[1] * w[1] - 1, 2 * w[1] * w[2],
+            2 * w[2] * w[0], 2 * w[2] * w[1], 2 * w[2] * w[2] - 1];
+  }
+  const x = k[0] / s, y = k[1] / s, z = k[2] / s, C = 1 - c;
+  return [c + x * x * C, x * y * C - z * s, x * z * C + y * s,
+          y * x * C + z * s, c + y * y * C, y * z * C - x * s,
+          z * x * C - y * s, z * y * C + x * s, c + z * z * C];
+}
+
+// Where every shape of the moving part ends up, or null when that would put
+// one past the position limit -- clamping one shape and not the others would
+// tear the part, so the whole move is refused instead.
+function snapPlacement(list, mv, st, flush) {
+  const t = flush ? st.normal : st.normal.map(x => -x);
+  const R = rotBetween(mv.normal, t), piv = mv.point;
+  const off = v3dot(v3sub(st.point, piv), st.normal);
+  const out = [];
+  for (const n of list) {
+    const q = mApply(R, v3sub(n.p, piv));
+    const p = [0, 1, 2].map(i => piv[i] + q[i] + off * st.normal[i]);
+    if (p.some(x => Math.abs(x) > POSLIM)) return null;
+    out.push({ n, p, r: mToEuler(mMul(R, eulerToM(n.r))) });
+  }
+  return out;
+}
+
+function snapSay(msg) { byId('snapMsg').textContent = msg; }
+function syncSnapbar() {
+  byId('snapbar').classList.toggle('on', snapOn);
+  byId('snapBtn').classList.toggle('on', snapOn);
+  for (const b of byId('snapSide').children)
+    b.classList.toggle('on', (b.dataset.flush === '1') === snapFlush);
+}
+function setSnap(on) {
+  snapOn = on; snapFirst = null; lastSnap = null;
+  if (on) {
+    // the widget's handles would catch the taps meant for faces
+    picked = new Set();
+    snapSay('Snap: tap a flat face on the first part.');
+    renderList(); renderInspector();
+  }
+  syncSnapbar(); syncGizbar(); needDraw();
+}
+byId('snapBtn').onclick = () => setSnap(!snapOn);
+byId('snapDone').onclick = () => setSnap(false);
+addEventListener('keydown', e => { if (e.key === 'Escape' && snapOn) setSnap(false); });
+
+// Flipping the side straight after a snap does that snap again the other way
+// round, inside the same undo step -- but only while the part is still where
+// the snap left it. Moved since, the flip just sets the side for the next one.
+byId('snapSide').onclick = e => {
+  const b = e.target.closest('button[data-flush]');
+  if (!b) return;
+  const flush = b.dataset.flush === '1';
+  if (flush === snapFlush) return;
+  snapFlush = flush;
+  syncSnapbar();
+  const L = lastSnap;
+  const untouched = L && L.after.every(a => nodes.indexOf(a.n) >= 0
+    && a.n.p.every((x, i) => x === a.p[i]) && a.n.r.every((x, i) => x === a.r[i]));
+  if (!untouched) return;
+  for (const a of L.before) { a.n.p = a.p.slice(); a.n.r = a.r.slice(); }
+  const place = snapPlacement(L.before.map(a => a.n), L.mv, L.st, flush);
+  if (!place) {
+    for (const a of L.after) { a.n.p = a.p.slice(); a.n.r = a.r.slice(); }
+    snapSay('The other side would put it past the edge of the build volume.');
+    return;
+  }
+  for (const q of place) { q.n.p = q.p; q.n.r = q.r; }
+  L.after = place.map(q => ({ n: q.n, p: q.p.slice(), r: q.r.slice() }));
+  snapSay(L.say());
+  refreshInspectorValues(); save(); scheduleInfo(); needDraw();
+};
+
+function snapTap(px, py) {
+  const face = faceAt(px, py);
+  if (!face) { snapSay('That missed the model. Tap a flat face.'); return; }
+  if (!face.flat) {
+    snapSay(`That spot on the ${PRIMS[face.node.t].name.toLowerCase()} is not flat`
+            + ' (or the flat is under 1.5 mm across). Tap a flat face.');
+    return;
+  }
+  if (!snapFirst) {
+    snapFirst = face; lastSnap = null;
+    snapSay(`Face on ${face.node.t === 'field' ? 'the baked shape'
+            : 'the ' + PRIMS[face.node.t].name.toLowerCase()} picked. `
+            + 'Now tap a flat face on the other part.');
+    needDraw();
+    return;
+  }
+  const a = snapFirst, b = face;
+  snapFirst = null;
+  if (a.node === b.node) {
+    snapSay('Both faces are on the same shape. Tap a face on something else.');
+    needDraw();
+    return;
+  }
+  const ua = snapUnit(a, b), ub = snapUnit(b, a);
+  const va = foldVolume(ua.fold), vb = foldVolume(ub.fold);
+  // the lighter one moves; on a tie, the first one tapped
+  const [mv, st, um, us, vm, vs] = va <= vb ? [a, b, ua, ub, va, vb]
+                                            : [b, a, ub, ua, vb, va];
+  if (um.nodes.some(n => n.mx || n.my || n.mz)) {
+    snapSay(`${um.name} is mirrored, and a mirrored copy cannot be turned on its `
+            + 'own. Turn the mirror off to snap it.');
+    needDraw();
+    return;
+  }
+  const place = snapPlacement(um.nodes, mv, st, snapFlush);
+  if (!place) {
+    snapSay('That would put it past the edge of the build volume.');
+    needDraw();
+    return;
+  }
+  snapshot();
+  const before = place.map(q => ({ n: q.n, p: q.n.p.slice(), r: q.n.r.slice() }));
+  for (const q of place) { q.n.p = q.p; q.n.r = q.r; }
+  const cc = v => (v / 1000).toFixed(v < 1000 ? 2 : 1) + ' cm³';
+  lastSnap = {
+    mv, st, before, after: place.map(q => ({ n: q.n, p: q.p.slice(), r: q.r.slice() })),
+    say: () => `Snapped ${snapFlush ? 'flush' : 'face to face'}: ${um.name} moved, `
+             + `${us.name} stayed (${cc(vm)} against ${cc(vs)}). Flip the side `
+             + 'below, or tap two more faces.'
+  };
+  snapSay(lastSnap.say());
+  renderList(); renderInspector(); save(); scheduleInfo(); needDraw();
+}
+
+// The faces in play, drawn where they are: a square in the face's plane and a
+// tick along its normal, for the face waiting for its partner and for the one
+// the last snap held still.
+function drawSnapMarks(w, h) {
+  if (!snapOn) return;
+  const marks = [snapFirst, lastSnap && lastSnap.st].filter(Boolean);
+  if (!marks.length) return;
+  const data = [];
+  for (const m of marks) {
+    const N = m.normal, c = m.point, s = 4;
+    const u = v3norm(v3cross(N, Math.abs(N[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+    const v = v3cross(N, u);
+    const P = (a, b) => [0, 1, 2].map(i => c[i] + s * (a * u[i] + b * v[i]));
+    const sq = [P(-1, -1), P(1, -1), P(1, 1), P(-1, 1)];
+    for (let k = 0; k < 4; k++) data.push(...sq[k], ...sq[(k + 1) % 4]);
+    data.push(...c, ...[0, 1, 2].map(i => c[i] + 6 * N[i]));
+  }
+  gl.disable(gl.DEPTH_TEST);
+  gl.useProgram(lineProg);
+  gl.bindVertexArray(lineVAO);
+  gl.bindBuffer(gl.ARRAY_BUFFER, lineBuf);
+  gl.uniformMatrix4fv(gl.getUniformLocation(lineProg, 'uMVP'), false, mvpMatrix(w / h));
+  gl.uniform3f(gl.getUniformLocation(lineProg, 'uC'), 0.98, 0.62, 0.22);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.DYNAMIC_DRAW);
+  gl.drawArrays(gl.LINES, 0, data.length / 3);
+  gl.bindVertexArray(null);
 }
 canvas.addEventListener('pointerup', endPtr);
 canvas.addEventListener('pointercancel', endPtr);
@@ -5966,12 +6330,15 @@ function hypRow(n) {
   const p = document.createElement('p');
   p.style.cssText = 'color:var(--dim);font-size:11.5px;margin:6px 0 0';
   p.textContent = cur === 'ellipse'
-    ? 'A quarter ellipse through the two leg tips, centred on the far corner '
+    ? 'A quarter ellipse between the two tips, centred on the far corner '
       + '\u2014 the conic at rho 0.414.'
     : cur === 'conic'
       ? 'Bowed in toward the corner, tangent to both legs. 0.5 is a parabola; '
         + 'lower is flatter, higher pulls in tight.'
       : 'Legs along X and Y from the right angle; Thickness is Z.';
+  if (cur !== 'line')
+    p.textContent += ' The curve thins to a knife edge at each tip: Land squares '
+      + 'the tips off with a flat that wide along both legs.';
   row.appendChild(p);
   return row;
 }
@@ -6124,6 +6491,9 @@ function renderInspector() {
     if (n.hyp === 'conic')
       add(sliderRow('Rho', '', () => n.rho, v => n.rho = v,
                     0.05, SF.TRI_RHO_MAX, 0.01, 2));
+    // the flat along both legs that squares the tips off; the kernel clamps
+    // it to the shorter leg, where the triangle has become a rectangle
+    add(sliderRow('Land', ' mm', () => n.land || 0, v => n.land = v, 0, 80, 0.25));
   }
 
   // With several shapes picked, Place drives the whole selection as one rigid

@@ -355,10 +355,14 @@ A model is an ordered list of shapes, each applied to what came before:
   the corner: **Conic**, with a Rho slider (0.5 is a parabola, lower is
   flatter, higher pulls in tight), or **Elliptical**, the quarter ellipse
   through the two leg tips centred on the far corner — which is the conic
-  at rho 0.414. Both curves leave the tips tangent to the legs, so the slab
-  thins to a knife edge there: it is the profile of a cove, the material a
-  fillet adds in an inside corner, and the last millimetre or so of each
-  tip is thinner than the STL grid can keep.
+  at rho 0.414. Both curves meet the legs tangentially, so on their own the
+  slab thins to a knife edge at each tip — the profile of a cove, and thinner
+  than the STL grid can keep for the last millimetre or so. **Land** fixes
+  that: a flat of that width along both legs, so each tip ends in a square
+  face that tall, at right angles to its leg, and the curve runs between the
+  two flats. Leg X and Leg Y stay the overall size; 0 is the bare cove, and
+  a land as wide as the shorter leg leaves a rectangle. It scales with
+  **Scale**, like the other lengths.
 
   The kernel carries four more — profile, wire, sweep and construct — that
   this editor does not offer, because each is a *drawing* held in a library
@@ -425,6 +429,43 @@ come out welded.
 mode: one finger slides the selection across the screen plane, two fingers
 raise and lower it. ⤢ frames the model in whatever strip of screen the
 sheet leaves visible. Drag or tap the grip to resize the sheet.
+
+### Snap
+
+**Snap** in the top bar puts two flat faces into one plane. Tap a flat face,
+then a flat face on something else: the lighter of the two turns and slides
+until its face lies in the other's plane, and the heavier one does not move.
+The bar that opens chooses which way round:
+
+- **Face to face 180°** — the faces end up touching, facing each other, as
+  for stacking one part on another or gluing them.
+- **Flush 0°** — the faces end up side by side, facing the same way, as for
+  levelling two tops.
+
+Flip it straight after a snap and that snap is done again the other way
+round; it is one undo step either way. The faces in play are marked in
+orange while the bar is open.
+
+What moves is a part: the whole body the face is on, when the two faces are
+on different bodies, so a part is never torn apart. Two faces on the same
+body move just the shape tapped, which is how to arrange shapes inside one
+part. Cuts aimed at that body alone go with it; a cut that reaches several
+bodies, like the build-plate cut, stays. "Lighter" is volume, measured on a
+coarse grid of the part's actual shape, cuts included.
+
+The motion is the least that does the job — the smallest turn that lines the
+faces up, about the point you tapped, then a slide along the stationary
+face's normal — so nothing slides *within* the plane. Face to face may leave
+the moved part beside the other one at the right height rather than on top
+of it; drag it along the plane from there.
+
+A face counts as flat when a ring of points around the tap lies within
+0.06 mm of one plane; a curved spot, or a flat under about 1.5 mm across, is
+refused with a message rather than snapped to a tangent. The plane is
+measured on the body's own shape, so a flat that a cut made is a face like
+any other, and a baked shape's faces work too. A mirrored shape cannot be
+moved this way (its copy would have to turn the other way), and a move that
+would carry anything past the ±150 mm position limit is refused whole.
 
 ### Importing an STL
 
